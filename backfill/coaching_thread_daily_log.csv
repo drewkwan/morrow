@@ -1,0 +1,71 @@
+date,weight_kg,sleep_hours,knee_pain,other_pain,workout_summary,notes
+2026-07-04,80.5,6.5,3,,2hr singles-adjacent context (competitive doubles the day before),"Two check-ins that day (AM 3/10, PM after doubles 3-4/10); weight taken after doubles+big dinner, not a clean morning baseline"
+2026-07-06,79.9,6,3,,,Two check-ins same values both times; weight rebound to ~80 baseline
+2026-07-07,,5,2,,,"Low sleep night, flagged as the concerning metric that day"
+2026-07-09,79.6,6.5,3,,2hr singles tennis hit (indoor/outdoor unspecified),"Weight is home-morning reading; separate office weigh-ins that day (81.3/81.1kg) explicitly flagged as non-comparable (after breakfast, office clothes)"
+2026-07-10,79.0,6.5,4.5,"left ankle 5-6/10 stiff/sore, no swelling","Push+legs: squat 80kg, Bulgarian split squat L30kg/R15kg (right leg flagged as limiting side)",Weight taken after breakfast (soft data point)
+2026-07-11,79.2,6.5,4,left ankle much better,Easy 5km run -- rolled RIGHT ankle at 2.1km (opposite side from the already-sore left ankle); no fall; stopped run,
+2026-07-12,78.9,3,3,"right ankle sore, no swelling, tender on stairs",Recovery day -- 13570 steps / 10.19km (2.11km run + 4.00km walk) / 10 flights,Reassured re: no gout flare on the right ankle
+2026-07-13,79.9,6.5,3,"right ankle improving, still painful on forced inward flexion","AM upper-body-only session; PM pull day: pull-ups 10x3, lat pulldown 60-80kgx3x8, weighted rows 100kgx3x8, rear delt, preacher curl 3x8@14kg + 1km jog + footwork",Weight rebounded to normal after the low-sleep dip
+2026-07-14,80.5,5,3,right ankle ~3/10 at worst (forced end-range inversion),Tennis -- won set 1 6-2 then stopped set 2 at 1-4 due to severe outer-midfoot pain from new ASICS Gel Resolution X shoes (knee/ankle fine throughout),Weight non-comparable (after breakfast/jeans)
+2026-07-15,78.7,7,3,"medial right-knee soreness below joint line, likely pes anserine",AM push session; PM office push session + progressive 3km run (7:00/6:30/5:50 per km),New valid low weight; went shoe-shopping (tried Gel Resolution 9 vs FF4)
+2026-07-16,78.9,6,3,,Rest day (dinner out),
+2026-07-17,78.9,5,3,,"Pull+legs AF Orchard/Wheelock: pull-ups 10x3, V-bar row 25kgx8+35kgx8x2, front pulldown 60kgx8x4, lat pulldown 60/80/70kgx8, rear delt 42.5/50/42.5kgx8, preacher curl 15kgx8x3, calf raises 30/40/40kg, leg ext 27.5/50/57.5kgx8, barbell squat 70kgx5+90kgx5x2, hamstring curl 42.5/50kgx8, Bulgarian split squat 25kg totalx5x3; PM 5km walk test in new tennis shoes","~19 pull sets / 16 leg sets -- unusually large session, later trimmed to ~15 sets/session"
+2026-07-18,78.7,6.5,3,,"Push AF: pull-ups 8x3, bench 60kgx8/90kgx1/80kgx3, shoulder press machine 35/42.5/50kgx8, pec fly 50/65/72.5kgx8, lateral raise 27.5/35/42.5kgx8, triceps rope pushdown 32.5kgx8+40kgx8x2; PM outdoor intervals 4x400m (1:53/1:50/1:43/1:40) in new shoes, no midfoot issue",90kg bench described as long-standing 'wall'
+2026-07-19,78.5,6,3,,Tennis with Kai -- 10-point drop-feed game lost 11-9; held both own serve games incl. one 0-30 comeback,New low weight
+2026-07-20,78.9,4,3,,"Light maintenance pull: pull-ups 10/10/8, rear delt 42.5kgx8x3, lat pulldown 70kgx8x3, V-bar row 25kgx8+35kgx8x3, preacher curl 15kgx8x3; treadmill walk 31min/2.2km",Low sleep (World Cup final)
+2026-07-21,79.5,6,3,,Treadmill run that became a threshold effort: 0.5km@9 + 3.5km@10 + 1km@12 + 0.2km@15 km/h = 5.2km total; HR into 190s by the end,Weight rise attributed to normal fluctuation
+2026-07-22,78.5,6,3,,Rest/easy walk 4.44km,
+2026-07-23,78.3,6,2,,"Push+legs AF Biopolis: pull-ups 8x3, bench warmup+80kgx4x3 ('not weak, just not fully returned' -- became the standing honest AF-Biopolis baseline), shoulder press 70/85/100kgx8, cable lateral 6.25kgx10x3, triceps pushdown 16.25kgx8+13.75kgx8x2, squat 70kgx5+90kgx5x2, Bulgarian 25kgx6x2, leg ext 27.5/50/57.5kgx8, ham curl 42.5/50kgx8","New low weight, best knee reading yet"
+2026-07-24,78.6,6,3,,Interval session: 1km warmup + 4x400m (1:45/1:43/1:36/1:35),Weight +0.3kg attributed to leg-day glycogen/water; slight stiff neck (woke up with it)
+2026-07-25,77.9,7,2,,Light tennis w/ J rained out -> 4.3km walk instead,"New low weight, best sleep in days"
+2026-07-26,77.8,7,2,,Tournament Match Day 1 -- Singles: WALKOVER; Doubles: WALKOVER,Neck largely recovered
+2026-07-27,78.5,6,2,,Match Day 2 -- hitting w/J lost a super tiebreak 10-8; Doubles: WALKOVER,Weight +0.7kg (normal post-dinner carb/sodium)
+2026-07-28,78.1,6.5,2,,Match Day 3 -- Singles vs Ethan WON 4-0 4-1 (1 double fault total),"Right thigh slightly tight post-match, knee fine"
+2026-07-29,,,,,Singles vs Julian WON 6-0 6-0; Doubles w/ J vs Kelvyn/Geoff WON 6-2 6-4,"Exact daily weight/sleep/knee stats lost from thread, reconstructed only from user's own recap"
+2026-07-30,78.2,6.5,4,,"Match Day 5 vs Mani (2nd seed) -- Singles LOST 6-4 3-6 0-4 RET (retired, cramping); Doubles LOST 6-2 7-5","Knee pain up from ~3-3.5 baseline, no major swelling"
+2026-07-31,79.0,6.5,4,right IT band sore,Recovery walk 5.21km,Knees survived tournament better than muscles
+2026-08-01,79.3,5,4.5,,"No training (wedding day -- long social day, banquet, drinks)",Weight increase attributed to fluid/glycogen/sodium not fat
+2026-08-02,79.2,6,4.5,,Recovery walk 4.0km,NEW GOAL SET: IPPT Gold by 27 Aug (targets: 57 push-ups / 53 sit-ups / 2.4km in 11:20). Prior benchmarks cited: 25 Nov 2025 = 41 situps/53 pushups/13:32/72pts; May 2024 = 52 situps/60 pushups/11:15/86pts (Gold)
+2026-08-03,79.0,6,4.3,,Workout undecided,
+2026-08-04,78.6,6,4,,Casual tennis with JC teammates,First clear knee improvement since the tournament
+2026-08-05,77.9,6,4,,"IPPT trial: push-ups 60/60s; sit-ups 40/60s (no break between, machine may under-count by ~3-5)",
+2026-08-06,77.7,6,3.7,,Light tennis with J,Best knee reading since the tournament
+2026-08-07,78.1,6,3.7,,Recovery walk 6.75km,
+2026-08-08,79.0,7,3.5,,First re-entry run since the tournament block: ~3km around 6:15/km avg (watch glitchy),No knee reaction
+2026-08-09,78.8,7,3.3,,Probably gym (day noted as such),
+2026-08-10,78.8,6.5,3,,Light tennis with Kai,Knee back to pre-tournament baseline
+2026-08-11,78.0,6,3,,"Baseline tennis + ~3.5km walk; PM sit-up session: block 1 20+20+15=55, block 2 20+20+20+15=75 -- 130 total across the night","Core cramped around 2nd 20-25 rep set in block 1, resolved by block 2"
+2026-08-12,78.4,5.5,3,,"Company tennis coaching + easy run 5.00km in 32:55 (6:35/km avg, HR avg 168)",Classified as aerobic re-entry/base run
+2026-08-13,77.2,6.5,3,,,New low weight
+2026-08-14,78.9,6,3,,Interval day: 1km warmup + 5x400m (1:47/1:50/1:47/1:53/1:37),
+2026-08-15,78.2,6.5,3,,Push day: bench warmup+80kgx4x2 then dropped to 70kgx4x1 (2nd 80kg set tough); shoulder press 70/80/85kgx8; cable lateral 6.25kgx10x3; triceps 13.75kgx8x3; decline sit-ups (IPPT) 20x3 = 60 reps,
+2026-08-16,78.2,6.5,3,,"Sunday pull+legs: pull-ups 8x3, lat pulldown 70kgx8x3, V-bar row 35kgx8x3, rear delt 42.5kgx8x3, preacher curl 15kgx8x3, calf raise 40kgx12x3, barbell squat 90kgx5x3 (misloaded plates, ran with it -- exceeded prior 90x5x2 baseline), Bulgarian 25kgx6x2, leg ext 50/57.5kgx8, ham curl 50kgx8x3; IPPT push-ups 30x2 (60s rest) then 15x1 (near failure)",
+2026-08-17,78.5,6,3,,3x800m intervals: 1km warmup + 3:48/3:58/4:08 (2.5min walk recovery),"Legs fatigued before breathing did; est. 2.4km fitness ~12:00, 40-60s off the 11:20 goal"
+2026-08-18,77.6,6,3,,"Stations: sit-ups 6x20sec=100 total (~51/min cadence), push-ups 58 in 50sec at ~90% effort",
+2026-08-19,78.9,5,3,,Company tennis + easy 5km run in 32:11 (6:26/km avg -- later found watch under-measured ~100m),
+2026-08-20,77.2,6,3,,Planned IPPT time trial that night (moved up due to weekend staycation),
+2026-08-21,77.6,4.5,2,,"Hotel push+legs (Smith machine, limited kit -- staycation)",Lowest knee reading in this block; planned time trial missed
+2026-08-22,77.8,7.5,2,,~45min treadmill walk,
+2026-08-23,,,,,Rest day,
+2026-08-24,,,,,Easy 5km in 34:27 (6:53/km avg),"Retrospective correction: earlier 'faster' runs (12 Aug, 19 Aug) likely GPS-undermeasured by ~100m/~2%; revised paces ~6:27/km and ~6:19/km"
+2026-08-25,76.8,6,2,,"FULL IPPT BENCHMARK: sit-ups 52/60s, push-ups 59/60s, 2.4km run 12:30 (splits 4:48/5:35/2:07 last 400m)",Lowest weight of the stretch. Official baseline vs targets: 59 push/52 situp/12:30 achieved vs 57/53/11:20 targets
+2026-08-26,77.5,5,2,,Company tennis coaching,
+2026-08-27,76.9,6,2,,,
+2026-08-28,78.1,5,2,,Walk only (previous day),
+2026-08-29,77.7,5.5,2,,No training -- unplanned deload after the benchmark,
+2026-08-31,77.7,6.5,2,,Walk only -- very tight weekend,
+2026-09-01,77.5,5.5,2,,Run attempt planned,Mental-health/friend-conflict context noted that day
+2026-09-02,76.6,5.5,2,,"Office gym pull + treadmill intervals: pull-ups 8x3, rear delt 7.5kgx8x3, preacher curl 14kgx8x3 (down from usual 16kg, deliberately conservative); treadmill 1km warmup + 400m intervals 13.0/13.5/14.0/14.5km/h then 300m@15+100m@16km/h; PM midnight run attempt, 2.45km, stopped early at 14:48 (6:04/km avg, HR up to 182)",
+2026-09-03,76.4,5.5,2,,"Light push + sit-up progression: 30s=25, 30s=23, 45s=36 reps (48/min cadence even late in the set)",
+2026-09-04,77.4,5.5,2,,"Visa office push day: bench (setting 18 warmup, 21x8x2, 21x5x1), shoulder press (setting 15/16), cable lateral 7.5kgx8x3, triceps rope 32.5kg warmup/40kg(max)x8/35kgx8; ~40min session","First explicit note of real strength loss vs pre-weight-loss numbers (used to clear 21x2 clean, now drops on set 2)"
+2026-09-05,76.9,6.5,2,,Doubles interclub match; missed the planned run the day before,
+2026-09-06,76.9,6,3,,Yesterday's interclub doubles: WON 3-6 6-4 [10-7] super tiebreak,"Played on a disliked synthetic-grass surface, felt rusty"
+2026-09-07,77.2,7,2.5,"NEW: right foot pain, base/underside of big toe -- possible gout flare","Weekend doubles interclub both days; took painkillers, resting","Two check-ins that day: AM 76.7kg/7.5h sleep/3, PM 77.2kg/7h/2 -- foot pain first appears here"
+2026-09-08,77.2,7,2,"right foot pain persisting, possible gout flare",No training,
+2026-09-09,77.9,6.5,2,right foot pain not improving despite gout medication,,Starting to suspect it might not be gout
+2026-09-10,77.1,6.5,2,"right foot pain persists, gout meds not helping",,Differential broadened to sesamoiditis/stress injury vs gout; photo shared showing pain at medial/plantar base of big toe (1st MTP joint region)
+2026-09-11,76.6,6,2,right foot still painful,,Decision made to see a doctor; IPPT attempt postponed indefinitely
+2026-09-13,76.1,7,2,"foot: brother (a doctor) examined it -- leans sesamoiditis, not gout",Yesterday: short ~30min pull workout only,Lowest weight recorded in this whole block
+2026-09-16,,,,,"Visa office push day: bench (setting 21) 8/5/5, shoulder press (setting 16) 8x2 (cleaner than prior), cable lateral 7.5kgx8x3, single-arm triceps 15kgx8x3 (switched from bilateral rope -- new baseline)","From gym-coaching-thread.pdf, no accompanying weight/sleep/knee that day"
+2026-09-23,,,,,"Visa office push day: bench (setting 21) 8/6/6 (improved from 16 Sep), shoulder press (setting 16) 8 then 5x1, cable lateral 7.5kgx8x3 stable, single-arm triceps 15kgx8x3 stable","From gym-coaching-thread.pdf, no accompanying weight/sleep/knee that day. Latest entry in either thread"

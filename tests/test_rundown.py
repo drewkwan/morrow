@@ -460,3 +460,293 @@ def test_day_stats_falls_back_to_raw_breakdown_when_synthesis_fails(monkeypatch)
     _run(bot.daystats_cmd(update, FakeContext()))
     reply = update.message.replies[-1]
     assert "500" in reply
+
+
+# ---------- rundown.py: _resolve_trend_range ----------
+
+def test_resolve_trend_range_none_start_uses_beginning_placeholder():
+    """Regression test for a real reported bug: "summarise my weight
+    progression since the beginning" used to be misread as a today-scoped
+    question. trend_start_days_ago=None means "since the beginning" -- there's
+    no real day-count for that, so it resolves to a placeholder start date old
+    enough to predate any real Morrow data, never today."""
+    start, end = bot._resolve_trend_range(None, None)
+    assert start == "2000-01-01"
+    assert end == (dt.date.today() + dt.timedelta(days=1)).isoformat()
+
+
+def test_resolve_trend_range_counts_back_from_today():
+    start, end = bot._resolve_trend_range(10, None)
+    assert start == _days_ago(10)
+    assert end == (dt.date.today() + dt.timedelta(days=1)).isoformat()
+
+
+def test_resolve_trend_range_end_days_ago_bounds_before_today():
+    start, end = bot._resolve_trend_range(10, 3)
+    assert start == _days_ago(10)
+    assert end == (dt.date.today() - dt.timedelta(days=2)).isoformat()  # _days_ago(3) + 1 day
+
+
+# ---------- rundown.py: _trend_series ----------
+
+def test_trend_series_orders_by_date_not_insertion_order():
+    """Same real bug as get_recent_vitals/get_recent_meals/get_recent_workouts
+    (a historical backfill inserts old-dated rows LAST, with the newest ids)
+    -- _trend_series must sort explicitly by date, not trust the id-ordered
+    rows get_vitals_in_range hands back."""
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date=_days_ago(60))
+    db.add_vitals(CHAT, weight_kg=75.0, vitals_date=_days_ago(5))
+    # Inserted last (highest id), but dated well before the entry above.
+    db.add_vitals(CHAT, weight_kg=78.0, vitals_date=_days_ago(30))
+    series = bot._trend_series(CHAT, "weight", "2000-01-01", (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    assert [d for d, _ in series] == sorted(d for d, _ in series)
+
+
+def test_trend_series_calories_in_sums_per_day_from_meals():
+    db.get_or_create_user(CHAT)
+    yesterday = _days_ago(1)
+    db.add_meal(CHAT, "lunch", ["mango"], 400, 600, 500, meal_date=yesterday)
+    db.add_meal(CHAT, "dinner", ["rice"], 300, 500, 400, meal_date=yesterday)
+    db.add_meal(CHAT, "lunch", ["egg"], 100, 200, 150, meal_date=db.today_str())
+    series = bot._trend_series(CHAT, "calories_in", "2000-01-01",
+                                (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    assert dict(series) == {yesterday: 900, db.today_str(): 150}
+
+
+def test_trend_series_spending_uses_get_daily_totals():
+    db.get_or_create_user(CHAT)
+    db.add_expense(CHAT, 20, "SGD", "lunch", "Food")
+    series = bot._trend_series(CHAT, "spending", "2000-01-01",
+                                (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    assert dict(series) == {db.today_str(): 20}
+
+
+# ---------- rundown.py: _trend_payload ----------
+
+def test_trend_payload_computes_real_first_last_min_max_change():
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date=_days_ago(30))
+    db.add_vitals(CHAT, weight_kg=82.0, vitals_date=_days_ago(15))  # the real max
+    db.add_vitals(CHAT, weight_kg=75.5, vitals_date=_days_ago(1))  # the real min and last
+
+    payload = bot._trend_payload(CHAT, "weight", "2000-01-01",
+                                  (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    assert payload["metric"] == "weight"
+    assert payload["unit"] == "kg"
+    assert payload["count"] == 3
+    assert payload["start_date"] == _days_ago(30)  # real earliest date found, not the placeholder
+    assert payload["end_date"] == _days_ago(1)
+    assert payload["first"] == {"date": _days_ago(30), "value": 80.0}
+    assert payload["last"] == {"date": _days_ago(1), "value": 75.5}
+    assert payload["min"] == {"date": _days_ago(1), "value": 75.5}
+    assert payload["max"] == {"date": _days_ago(15), "value": 82.0}
+    assert payload["change"] == -4.5  # 75.5 - 80.0
+
+
+def test_trend_payload_nulls_out_when_nothing_logged():
+    db.get_or_create_user(CHAT)
+    payload = bot._trend_payload(CHAT, "weight", "2000-01-01",
+                                  (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    assert payload["count"] == 0
+    assert payload["first"] is None
+    assert payload["last"] is None
+    assert payload["min"] is None
+    assert payload["max"] is None
+    assert payload["change"] is None
+    assert payload["start_date"] is None
+    assert payload["end_date"] is None
+
+
+def test_trend_payload_change_is_none_with_only_one_data_point():
+    """A single reading has no real "change" to report -- null, not 0
+    (0 would falsely claim "no movement")."""
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=76.0)
+    payload = bot._trend_payload(CHAT, "weight", "2000-01-01",
+                                  (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    assert payload["count"] == 1
+    assert payload["change"] is None
+    assert payload["first"] == payload["last"]
+
+
+# ---------- ai.py: answer_with_trend ----------
+
+def test_answer_with_trend_returns_model_text(monkeypatch):
+    _mock_client(monkeypatch, "You're down 4.5kg since the beginning, nice steady progress.")
+    payload = {"metric": "weight", "unit": "kg", "start_date": None, "end_date": None, "count": 0,
+               "first": None, "last": None, "min": None, "max": None, "change": None}
+    text = ai.answer_with_trend(payload)
+    assert "4.5kg" in text
+
+
+def test_answer_with_trend_raises_on_api_failure(monkeypatch):
+    """Same division of labor as answer_with_rundown/answer_with_day_stats --
+    the reply-text wrapper (not this function) is responsible for the
+    fallback."""
+    _mock_client(monkeypatch, ConnectionError("network blip"))
+    try:
+        ai.answer_with_trend({"metric": "weight"})
+        assert False, "expected the ConnectionError to propagate"
+    except ConnectionError:
+        pass
+
+
+# ---------- rundown.py: _trend_fallback_text ----------
+
+def test_trend_fallback_text_never_silent_on_empty_range():
+    payload = bot._trend_payload(CHAT, "weight", "2000-01-01",
+                                  (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    text = bot._trend_fallback_text(payload)
+    assert "Nothing logged" in text
+
+
+def test_trend_fallback_text_reports_real_change():
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date=_days_ago(10))
+    db.add_vitals(CHAT, weight_kg=75.5, vitals_date=_days_ago(1))
+    payload = bot._trend_payload(CHAT, "weight", "2000-01-01",
+                                  (dt.date.today() + dt.timedelta(days=1)).isoformat())
+    text = bot._trend_fallback_text(payload)
+    assert "-4.5kg" in text
+
+
+# ---------- natural-language "trend" intent + /trend command ----------
+
+def _fake_parse_message_trend(metric, start_days_ago=None, end_days_ago=None):
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None):
+        return {
+            "intent": "trend", "clarification_question": None, "casual_reply": None,
+            "trend_metric": metric, "trend_start_days_ago": start_days_ago, "trend_end_days_ago": end_days_ago,
+            **_no_op_extra_fields(),
+        }
+    return fake_parse_message
+
+
+def test_natural_language_trend_replies_with_synthesis_for_the_right_metric(monkeypatch):
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date=_days_ago(30))
+    db.add_vitals(CHAT, weight_kg=75.5, vitals_date=_days_ago(1))
+    captured = {}
+
+    def fake_answer_with_trend(payload):
+        captured["payload"] = payload
+        return "You've lost 4.5kg since the beginning, solid progress."
+
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_trend("weight"))
+    monkeypatch.setattr(bot.ai, "answer_with_trend", fake_answer_with_trend)
+    update = FakeUpdate(CHAT, text="summarise my weight progression since the beginning")
+    _run(bot.handle_text(update, FakeContext()))
+    assert update.message.replies[-1] == "You've lost 4.5kg since the beginning, solid progress."
+    assert captured["payload"]["metric"] == "weight"
+    assert captured["payload"]["count"] == 2
+    assert captured["payload"]["change"] == -4.5
+
+
+def test_natural_language_trend_reply_is_not_narrated_a_second_time(monkeypatch):
+    """Same regression guard as rundown/day_stats's, for narrate=False on the
+    'trend' intent -- see those tests' docstrings."""
+    db.get_or_create_user(CHAT)
+
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_trend("weight"))
+    monkeypatch.setattr(bot.ai, "answer_with_trend", lambda payload: "Nothing logged for that yet.")
+    monkeypatch.setattr(bot.ai, "narrate_reply", lambda text, *a, **kw: f"RE-NARRATED: {text}")
+    update = FakeUpdate(CHAT, text="how's my weight trended")
+    _run(bot.handle_text(update, FakeContext()))
+    assert update.message.replies[-1] == "Nothing logged for that yet."
+
+
+def test_natural_language_trend_logs_to_conversation_history(monkeypatch):
+    db.get_or_create_user(CHAT)
+
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_trend("sleep"))
+    monkeypatch.setattr(bot.ai, "answer_with_trend", lambda payload: "Sleep's been steady.")
+    update = FakeUpdate(CHAT, text="how's my sleep trended")
+    _run(bot.handle_text(update, FakeContext()))
+    rows = db.get_recent_messages(CHAT)
+    assert rows[-1]["role"] == "morrow"
+    assert rows[-1]["content"] == "Sleep's been steady."
+
+
+def test_natural_language_trend_asks_rather_than_guesses_when_metric_missing(monkeypatch):
+    """Regression guard: if the model classifies as 'trend' but doesn't
+    settle on one of the six covered metrics, Morrow should ask which one
+    rather than silently defaulting to something that could be wrong."""
+    db.get_or_create_user(CHAT)
+
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_trend(None))
+    update = FakeUpdate(CHAT, text="how have I been trending")
+    _run(bot.handle_text(update, FakeContext()))
+    assert "which" in update.message.replies[-1].lower()
+
+
+def test_trend_command_defaults_to_since_the_beginning(monkeypatch):
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date=_days_ago(500))
+    captured = {}
+
+    def fake_answer_with_trend(payload):
+        captured["payload"] = payload
+        return "ok"
+
+    monkeypatch.setattr(bot.ai, "answer_with_trend", fake_answer_with_trend)
+    context = FakeContext()
+    context.args = ["weight"]
+    _run(bot.trend_cmd(FakeUpdate(CHAT), context))
+    assert captured["payload"]["start_date"] == _days_ago(500)  # the old reading wasn't excluded
+
+
+def test_trend_command_accepts_n_days(monkeypatch):
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date=_days_ago(500))
+    db.add_vitals(CHAT, weight_kg=75.0, vitals_date=_days_ago(3))
+    captured = {}
+
+    def fake_answer_with_trend(payload):
+        captured["payload"] = payload
+        return "ok"
+
+    monkeypatch.setattr(bot.ai, "answer_with_trend", fake_answer_with_trend)
+    context = FakeContext()
+    context.args = ["weight", "10"]
+    _run(bot.trend_cmd(FakeUpdate(CHAT), context))
+    # Bounded to the last 10 days -- the 500-days-ago reading is excluded.
+    assert captured["payload"]["count"] == 1
+    assert captured["payload"]["first"]["value"] == 75.0
+
+
+def test_trend_command_rejects_unknown_metric(monkeypatch):
+    db.get_or_create_user(CHAT)
+    update = FakeUpdate(CHAT)
+    context = FakeContext()
+    context.args = ["bench_press"]
+    _run(bot.trend_cmd(update, context))
+    assert "Unknown metric" in update.message.replies[-1]
+
+
+def test_trend_command_rejects_bad_range_argument(monkeypatch):
+    db.get_or_create_user(CHAT)
+    update = FakeUpdate(CHAT)
+    context = FakeContext()
+    context.args = ["weight", "banana"]
+    _run(bot.trend_cmd(update, context))
+    assert "Usage:" in update.message.replies[-1]
+
+
+def test_trend_falls_back_to_raw_breakdown_when_synthesis_fails(monkeypatch):
+    db.get_or_create_user(CHAT)
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date=_days_ago(10))
+    db.add_vitals(CHAT, weight_kg=75.5, vitals_date=_days_ago(1))
+
+    def fake_answer_with_trend(payload):
+        raise ConnectionError("network blip")
+
+    monkeypatch.setattr(bot.ai, "answer_with_trend", fake_answer_with_trend)
+    update = FakeUpdate(CHAT)
+    context = FakeContext()
+    context.args = ["weight"]
+    _run(bot.trend_cmd(update, context))
+    reply = update.message.replies[-1]
+    assert "-4.5kg" in reply

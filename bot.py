@@ -157,15 +157,23 @@ from reminders import (
 from replies import _reply, _send_alert_if_needed, _send_proactive
 from rundown import (
     RUNDOWN_WINDOW_DAYS,
+    TREND_METRICS,
+    TREND_UNITS,
     _day_stats_fallback_text,
     _day_stats_payload,
     _day_stats_reply_text,
     _resolve_day,
+    _resolve_trend_range,
     _rundown_fallback_text,
     _rundown_payload,
     _rundown_reply_text,
+    _trend_fallback_text,
+    _trend_payload,
+    _trend_reply_text,
+    _trend_series,
     daystats_cmd,
     rundown_cmd,
+    trend_cmd,
 )
 from summary import WEEKDAY_NAMES, _category_insights_for_period, summary
 from tasks import (

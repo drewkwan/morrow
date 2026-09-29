@@ -50,7 +50,7 @@ from morning import morning_briefing_tick, morning_cmd
 from nudges import evening_nudge_tick
 from nutrition import handle_photo, logmeal_cmd, recentmeals
 from reminders import addreminder_cmd, donereminder_cmd, reminders_cmd, removereminder_cmd
-from rundown import daystats_cmd, rundown_cmd
+from rundown import daystats_cmd, rundown_cmd, trend_cmd
 from summary import summary
 from tasks import addtask_cmd, done_cmd, tasks_cmd
 from vitals import logvitals_cmd, recentvitals
@@ -122,6 +122,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Remove one: /removeevent <id>\n\n"
         "How's everything going, across money/food/training/vitals together: /rundown\n"
         "Calories/activity for one specific day: /daystats [today|yesterday|N]\n"
+        "How one metric has progressed over time: /trend <weight|sleep|knee_pain|calories_in|"
+        "calories_out|spending> [N days|all]\n"
         "See today's briefing (today's budget + due to-dos + a look back at yesterday) any time: /morning\n\n"
         "Or just tell me naturally, e.g. \"spent 15 on uber\", \"had a mango\", \"played tennis for an hour\", "
         "\"weight 76.6, slept 5.5 hours\", \"remember I go to Fitness First Bugis Tue/Thu\", \"remind me to call "
@@ -179,6 +181,7 @@ def main():
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("rundown", rundown_cmd))
     app.add_handler(CommandHandler("daystats", daystats_cmd))
+    app.add_handler(CommandHandler("trend", trend_cmd))
     app.add_handler(CommandHandler("recent", recent))
     app.add_handler(CommandHandler("undo", undo))
     app.add_handler(CommandHandler("delete", delete_cmd))

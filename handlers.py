@@ -27,7 +27,7 @@ from nutrition import _log_meals_and_reply, _target_date_from_days_ago
 from events import _add_events_and_reply, _events_text
 from reminders import _add_reminder_and_reply, _reminders_text
 from replies import PENDING_DUPLICATE_WORKOUT_KEY, PENDING_KEY, _reply, _send_alert_if_needed
-from rundown import _day_stats_payload, _day_stats_reply_text, _rundown_reply_text
+from rundown import TREND_METRICS, _day_stats_payload, _day_stats_reply_text, _rundown_reply_text, _trend_reply_text
 from tasks import _log_tasks_and_reply, _recent_tasks_for_ai, _tasks_text
 from vitals import _log_vitals_and_reply
 
@@ -263,6 +263,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.chat_data.pop(PENDING_KEY, None)
         await _reply(update, chat_id, await _day_stats_reply_text(chat_id, parsed.get("day_stats_days_ago")),
                      narrate=False)
+        return
+
+    if intent == "trend":
+        # Real, deterministically-computed first/last/min/max/change for one
+        # metric over a real date range, handed to Claude only to narrate --
+        # see rundown._trend_payload's docstring for the real bug this
+        # replaces: "summarise my weight progression since the beginning"
+        # used to be misread as a today-scoped question.
+        # narrate=False -- ai.answer_with_trend already narrated this from
+        # the real payload, same reasoning as the 'day_stats' branch above.
+        context.chat_data.pop(PENDING_KEY, None)
+        trend_metric = parsed.get("trend_metric")
+        if trend_metric not in TREND_METRICS:
+            # The model classified this as "trend" but didn't (or couldn't)
+            # settle on one of the covered metrics -- ask rather than guess.
+            await _reply(
+                update, chat_id,
+                "Which one -- weight, sleep, knee pain, calories in, calories out, or spending?",
+                narrate=False,
+            )
+            return
+        await _reply(
+            update, chat_id,
+            await _trend_reply_text(
+                chat_id, trend_metric, parsed.get("trend_start_days_ago"), parsed.get("trend_end_days_ago")
+            ),
+            narrate=False,
+        )
         return
 
     if intent == "log_meal":

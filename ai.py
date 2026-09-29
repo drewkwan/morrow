@@ -135,6 +135,8 @@ COMMAND_LIST = (
     "/memory (list everything currently remembered), /forget <label> (remove a remembered item), "
     "/rundown (cross-domain check-in: money + food + training + vitals together over the last 7 days), "
     "/daystats [today|yesterday|N] (real calories in/out + activity + vitals for ONE specific day), "
+    "/trend <weight|sleep|knee_pain|calories_in|calories_out|spending> [N days|all] (how one metric has "
+    "progressed over a date range -- first/last/min/max/change, real numbers, not just today), "
     "/addtask <description> (add a to-do, e.g. 'call the dentist tomorrow 5pm'), "
     "/tasks (show the open to-do list, soonest due first), /done <id> (mark a to-do done), "
     "/addreminder <description> (add a DAILY recurring reminder, e.g. 'take hair pills' -- resurfaces every "
@@ -207,7 +209,7 @@ source of durable facts -- never invent a plan or preference that isn't actually
 
 Respond with ONLY a JSON object, no other text, matching this shape:
 {{
-  "intent": "log_expense" | "log_meal" | "log_workout" | "log_lift" | "log_vitals" | "log_task" | "add_reminder" | "add_event" | "correction" | "show_balance" | "show_recent" | "show_tasks" | "show_reminders" | "show_events" | "rundown" | "day_stats" | "remember" | "forget" | "show_memory" | "casual" | "clarification",
+  "intent": "log_expense" | "log_meal" | "log_workout" | "log_lift" | "log_vitals" | "log_task" | "add_reminder" | "add_event" | "correction" | "show_balance" | "show_recent" | "show_tasks" | "show_reminders" | "show_events" | "rundown" | "day_stats" | "trend" | "remember" | "forget" | "show_memory" | "casual" | "clarification",
 
   "expenses": [list of one or more objects, log_expense only -- ALWAYS a list, even for a single purchase]
     each shaped: {{"amount": number, "currency": one of the currency list or null if not mentioned,
@@ -245,6 +247,24 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     29 days elapsed in September (1st to 29th) = 76. So day_stats_days_ago = 76, not 0.
     Default to 0 (today) only if the message asks for stats but doesn't name a day at all, e.g. "how am I doing
     today calorie-wise" -- never as a fallback when a date was named but the count felt hard to work out),
+
+  "trend_metric": "weight" | "sleep" | "knee_pain" | "calories_in" | "calories_out" | "spending" | null (trend
+    only -- which SINGLE metric's progression over time is being asked about. "weight"/"sleep"/"knee_pain"
+    come from vitals check-ins, "calories_in" from logged meals, "calories_out" from logged workouts,
+    "spending" from logged expenses. Pick exactly one even if the message could loosely touch more than one
+    domain -- e.g. "how am I doing overall lately" is "rundown", not "trend"; "how has my weight/sleep/pain/
+    spending/eating/burning been trending" IS "trend". If the metric genuinely isn't one of these (e.g. "how's
+    my bench press progressed" -- a specific lift, not one of the six above), use "casual" instead; trend
+    doesn't cover lift-by-lift progression yet),
+  "trend_start_days_ago": integer or null (trend only -- how many days back the range STARTS, same plain
+    day-count/arithmetic discipline as day_stats_days_ago above (see its worked cross-month example). Leave
+    this null for "since the beginning"/"overall"/"all time"/"since I started"/no start named at all -- null
+    deliberately means "start from the real earliest data found," not "today": there's no way to know how
+    many days ago your logging actually started without querying the database, so never guess a number for
+    this, just leave it null and the real earliest date will be used),
+  "trend_end_days_ago": integer or null (trend only -- how many days back the range ENDS; almost always null,
+    meaning "up through today" -- only set this if the message explicitly bounds the end before today, e.g.
+    "my weight trend up to last month" or "spending trend through August"),
 
   "lifts": [list of one or more objects, log_lift only -- ALWAYS a list, even for a single exercise, and
     however many distinct exercises are named in the message -- "pull-ups 10x3, then v-bar rows 35kg 8x3, then
@@ -714,6 +734,22 @@ Deciding the intent:
   "show me again" -- never let that fall through to casual and get freehand-recalculated or falsely denied.
   Only fall back to "casual" for a single-day question that ISN'T about totals at all (e.g. "what did that
   dry mala taste like" isn't answerable from data and is just conversation).
+- "trend": the message asks how a SINGLE metric has moved/progressed/changed over a RANGE of time longer than
+  one day -- weight, sleep, knee pain, calories in, calories out, or spending (e.g. "summarise my weight
+  progression since the beginning", "how's my sleep been trending this month", "has my knee pain gotten
+  better or worse lately", "how has my spending trended since August", "am I eating more or less than I used
+  to", "how's my weight looked over the last 3 months"). This is different from "day_stats" (one specific day)
+  and "rundown" (the fixed default last-7-days cross-domain snapshot) -- "trend" is for an arbitrary,
+  often-open-ended range on ONE metric, answered from REAL first/last/min/max/change figures freshly computed
+  from the database, never estimated or recalled from earlier in the conversation, the same "real numbers in,
+  never guessed" discipline as day_stats/rundown. This is the fix for a real observed failure: "summarise my
+  weight progression since the beginning" used to be misread as a today-scoped question and answered with only
+  today's vitals, ignoring the actual ask (the whole history). Any phrasing asking for a trajectory, pattern,
+  progression, or "since X" / "over time" / "lately" / "has it gotten better/worse" on one of the six metrics
+  above is "trend", not "casual" and not "day_stats". If the message names a specific lift (e.g. "how's my
+  bench progressed") or otherwise doesn't map to one of the six covered metrics, use "casual" instead --
+  lift-by-lift progression isn't covered by trend yet. If it's genuinely asking for everything across domains
+  recently (not one metric, not a real range) that's still "rundown".
 - "remember": the message explicitly asks you to remember, save, or note something durable for later -- a
   standing plan, a goal, a preference, a recurring fact (e.g. "remember I go to Fitness First Bugis Tue/Thu for
   legs and back", "my goal is 75kg by December", "remember I'm allergic to shellfish", "note that I prefer
@@ -1574,6 +1610,52 @@ def answer_with_day_stats(payload: dict) -> str:
     return resp.content[0].text.strip()
 
 
+def answer_with_trend(payload: dict) -> str:
+    """payload holds real computed figures for ONE metric over a date range --
+    metric (which of weight/sleep/knee_pain/calories_in/calories_out/spending),
+    unit, start_date/end_date (the REAL earliest/latest dates actual data was
+    found on, not any placeholder), count (how many data points), first/last
+    (each {date, value} -- the earliest and latest actual readings in range),
+    min/max (each {date, value}), and change (last.value - first.value, or
+    null if count < 2) -- all computed deterministically in Python (see
+    rundown._trend_payload), never estimated or re-derived by the model.
+    Returns a short narrative, called only for the 'trend' intent (e.g.
+    "summarise my weight progression since the beginning", "how's my sleep
+    been trending"). Same discipline as answer_with_day_stats -- every number
+    here is already correct and final, restate it plainly, never recompute
+    or "correct" it based on anything said earlier in the conversation. If
+    count is 0 (nothing logged for this metric in range at all), say that
+    plainly rather than inventing a trend."""
+    client = _get_client()
+    data_str = json.dumps(payload)
+    resp = client.messages.create(
+        model=config.CLAUDE_NARRATION_MODEL,
+        max_tokens=350,
+        system=(
+            "You are Morrow, a personal companion, answering a question about how ONE metric has "
+            "progressed over a date range (e.g. 'summarise my weight progression since the beginning', "
+            "'how's my sleep been trending'). You're given real computed figures: metric and unit, the "
+            "actual start_date/end_date data was found on (these are the REAL earliest/latest dates with "
+            "a reading, not the range the person literally asked for -- if they said 'since the "
+            "beginning', start_date IS the real beginning, state it as a real date, don't say something "
+            "vague like 'since you started'), count (how many readings), first and last (each a "
+            "{date, value} -- the earliest and latest actual readings), min and max (each {date, value}), "
+            "and change (last's value minus first's value -- POSITIVE means it went up, NEGATIVE means it "
+            "went down; use change's own sign exactly as given, never recompute it yourself). Every number "
+            "here is already correct and final -- restate it plainly, never recalculate, round "
+            "differently, or 'correct' it based on anything said earlier in the conversation. If count is "
+            "0, say plainly that nothing's logged for that metric in range rather than inventing a trend; "
+            "if count is 1, say there's only the one reading so there's no real trend yet, and give it. "
+            "Otherwise name the real start and end values and dates, the overall direction and size of "
+            "the change, and mention the min/max only if they're not just the first/last (i.e. there was a "
+            "real swing in between worth naming). Write 2-5 short plain-text lines, matter-of-fact, the "
+            f"way a companion who actually checked would answer -- not a report. {TELEGRAM_FORMATTING_NOTE}"
+        ),
+        messages=[{"role": "user", "content": data_str}],
+    )
+    return resp.content[0].text.strip()
+
+
 CASUAL_SYSTEM_PROMPT = f"""You are Morrow, the person's personal companion and tracker, having an ordinary \
 back-and-forth conversation with them on Telegram -- not extracting data, not filling out a form. This is a \
 dedicated call just for this: nothing here needs to come back as JSON, and nothing you write commits to any \
@@ -1799,6 +1881,9 @@ def _clarify_fallback(message: str) -> dict:
         "vitals_notes": None,
         "logged_days_ago": None,
         "day_stats_days_ago": None,
+        "trend_metric": None,
+        "trend_start_days_ago": None,
+        "trend_end_days_ago": None,
         "tasks": None,
         "reminder_description": None,
         "events": None,

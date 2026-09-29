@@ -291,6 +291,14 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     yourself, that's done in code),
   "due_time": string or null (correction + edit_task only -- "HH:MM" 24-hour time ONLY if a specific clock time
     was mentioned alongside the new date, e.g. "push it to 5pm tomorrow" -> "17:00"; null otherwise),
+  "remove_due_date": true or null (correction + edit_task only, target_domain="task" -- set true ONLY when the
+    message asks to CLEAR the due date while keeping the to-do itself open, e.g. "remove the due date", "take
+    off the deadline, keep it on my list", "no due date for that one anymore, but don't delete it". This is a
+    real third state, distinct from due_in_days: due_in_days sets a NEW date, remove_due_date clears it back to
+    none, and leaving this null means the due date isn't changing at all. Never set both due_in_days and
+    remove_due_date on the same correction -- that's a contradiction (naming an actual new date IS the fix, not
+    a removal); if the message names an actual new date, use due_in_days instead. Leave it null whenever the
+    due date isn't what's being touched by this correction),
   "new_currency": one of the currency list or null (correction + edit_currency only),
   "new_amount": number or null (correction + edit_amount only -- the item's corrected total; correction +
     adjust_balance only -- a DELTA to add to the current rolled-over balance, not a replacement value; may be
@@ -570,16 +578,19 @@ Deciding the intent:
   "clarification" rather than guessing (this mirrors an existing real interaction: "adjust my rolled-over
   balance" without a specific number needs the amount, not a guess).
   correction_action="edit_task" (target_domain="task" only) is a SINGLE flexible action covering an existing
-  to-do's title, due date, and notes -- set whichever of new_description (the title), due_in_days/due_time (the
-  due date), and new_task_notes (a note) the message actually implies changing, in any combination, and leave
-  the rest null. Examples: "push #11 to tomorrow" sets only due_in_days; "actually it's calling the vet, not
-  the dentist" sets only new_description; "push #11 to tomorrow, I need Shardul's address" sets BOTH
-  due_in_days AND new_task_notes in the same correction -- don't split an obviously-compound edit like that
-  into two separate turns, or silently drop the note just because the due date was the more obvious change.
-  A due date here is deliberately forward-looking, unlike edit_date's backward-only days_ago (which can't
-  express "in 3 days") -- due_in_days/due_time are the SAME forward day-count fields log_task uses for a
-  brand-new to-do, just applied to an existing one. At least one of the three fields must actually be
-  changing; if the message is about a to-do but it's unclear WHAT should change, use "clarification" and ask.
+  to-do's title, due date, and notes -- set whichever of new_description (the title), due_in_days/due_time (a
+  NEW due date), remove_due_date (CLEARING the due date instead), and new_task_notes (a note) the message
+  actually implies changing, in any combination, and leave the rest null. Examples: "push #11 to tomorrow" sets
+  only due_in_days; "actually it's calling the vet, not the dentist" sets only new_description; "push #11 to
+  tomorrow, I need Shardul's address" sets BOTH due_in_days AND new_task_notes in the same correction -- don't
+  split an obviously-compound edit like that into two separate turns, or silently drop the note just because
+  the due date was the more obvious change; "take the due date off #22, keep it open, I'll do it later" sets
+  ONLY remove_due_date=true -- do NOT invent a due_in_days for this (there's no new date to compute), and do
+  NOT use "delete" (the to-do itself isn't going away, just its date). A due date here is deliberately
+  forward-looking, unlike edit_date's backward-only days_ago (which can't express "in 3 days") --
+  due_in_days/due_time are the SAME forward day-count fields log_task uses for a brand-new to-do, just applied
+  to an existing one. At least one of the four fields must actually be changing; if the message is about a
+  to-do but it's unclear WHAT should change, use "clarification" and ask.
   correction_action="edit_meal" (target_domain="meal" only) corrects what was actually eaten/drunk in an
   already-logged meal, WITHOUT deleting and relogging it from scratch -- the case this exists for is a photo- or
   text-logged meal that came out wrong (e.g. an item that wasn't really eaten got included, a portion size was

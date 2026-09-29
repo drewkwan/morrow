@@ -383,7 +383,7 @@ def _edit_task_response(task_id, **overrides):
     base = {
         "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
         "correction_action": "edit_task", "due_in_days": None, "due_time": None,
-        "new_task_notes": None, "days_ago": None,
+        "remove_due_date": None, "new_task_notes": None, "days_ago": None,
         "clarification_question": None, "casual_reply": None,
         **_no_op_correction_fields(),
     }
@@ -521,6 +521,54 @@ def test_undo_reverts_a_task_reschedule(monkeypatch):
     reschedule_update = FakeUpdate(CHAT, "move calling the dentist to in 3 days")
     _run(bot.handle_text(reschedule_update, context))
     assert db.get_task(CHAT, task_id)["due_at"] == (dt.date.today() + dt.timedelta(days=3)).isoformat()
+
+    undo_update = FakeUpdate(CHAT, "undo")
+    _run(bot.handle_text(undo_update, context))
+    assert db.get_task(CHAT, task_id)["due_at"] == today_str
+
+
+def test_correction_can_remove_a_task_due_date(monkeypatch):
+    """Regression test for a real reported bug: 'you can remove the due
+    date and keep it as an open task' got a confident 'removed due date'
+    reply, but the task kept showing up as due/overdue the next morning --
+    because remove_due_date didn't exist as a field at all, so this
+    correction was structurally a no-op no matter what Morrow said. Locks
+    in that the to-do stays open (not done, not deleted) with due_at
+    genuinely cleared to None."""
+    import datetime as dt
+    db.get_or_create_user(CHAT)
+    task_id = db.add_task(CHAT, "read birdhead draft", due_at=dt.date.today().isoformat())
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
+                            recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
+                            recent_lifts=None):
+        return _edit_task_response(task_id, remove_due_date=True)
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, "remove the due date and keep it as an open task")
+    _run(bot.handle_text(update, FakeContext()))
+    updated = db.get_task(CHAT, task_id)
+    assert updated["due_at"] is None
+    assert updated["done"] == 0
+    assert "due date removed" in update.message.replies[-1].lower()
+
+
+def test_undo_reverts_a_task_due_date_removal(monkeypatch):
+    import datetime as dt
+    db.get_or_create_user(CHAT)
+    today_str = dt.date.today().isoformat()
+    task_id = db.add_task(CHAT, "read birdhead draft", due_at=today_str)
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
+                            recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
+                            recent_lifts=None):
+        return _edit_task_response(task_id, remove_due_date=True)
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    context = FakeContext()
+    update = FakeUpdate(CHAT, "remove the due date, keep it open")
+    _run(bot.handle_text(update, context))
+    assert db.get_task(CHAT, task_id)["due_at"] is None
 
     undo_update = FakeUpdate(CHAT, "undo")
     _run(bot.handle_text(undo_update, context))

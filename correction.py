@@ -46,6 +46,13 @@ from replies import _reply
 
 LAST_CORRECTION_KEY = "last_correction"
 
+# "Nothing about the due date was mentioned in this correction" -- distinct
+# from Python None, which edit_task's due-date handling now uses as a real
+# value meaning "clear it" (see db._UNSET's own docstring for the same
+# "None is a real value, so the not-touched-at-all default can't also be
+# None" reasoning). Only used locally within the edit_task branch below.
+_DUE_UNCHANGED = object()
+
 # A short reply matching one of these, sent as the very next message after a
 # correction, reverts it directly -- deterministic and exact-match only (not
 # a substring check), so an expense description that happens to contain the
@@ -243,17 +250,34 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
         # A due date is forward-looking (due_in_days/due_time), unlike
         # edit_date's backward-only days_ago -- "in 3 days" can't be
         # expressed as "N days ago".
+        #
+        # The due-date side is a real THREE-state choice, not two: no
+        # change / set a new date / clear it back to none. due_in_days only
+        # ever expresses "set a new date" (see ai.py's field doc -- the code
+        # below requires it to be a non-negative int), so there used to be
+        # no way at all for a correction to represent "remove the due date,
+        # keep the to-do open" -- a real reported bug where Morrow confirmed
+        # a removal that structurally could never have happened, because
+        # nothing here could ever produce a bare None for new_due_at (it
+        # would just fall out of `edits` entirely, leaving db.edit_task's
+        # _UNSET default -- "don't touch it" -- in place). remove_due_date
+        # is the explicit third state; _DUE_UNCHANGED (distinct from Python
+        # None, which is now a real "clear it" value) tracks "nothing about
+        # the due date was actually requested".
         new_title = parsed.get("new_description")
         new_notes = parsed.get("new_task_notes")
         due_in_days = parsed.get("due_in_days")
-        new_due_at = None
+        remove_due_date = bool(parsed.get("remove_due_date"))
+        new_due_at = _DUE_UNCHANGED
         if isinstance(due_in_days, int) and due_in_days >= 0:
             due_time = parsed.get("due_time")
             today = date.fromisoformat(db.today_str())
             due_date = today + timedelta(days=due_in_days)
             new_due_at = f"{due_date.isoformat()} {due_time}" if due_time else due_date.isoformat()
+        elif remove_due_date:
+            new_due_at = None  # a real value: explicitly clear the due date
 
-        if new_title is None and new_notes is None and new_due_at is None:
+        if new_title is None and new_notes is None and new_due_at is _DUE_UNCHANGED:
             await _reply(
                 update, chat_id,
                 f"What should I change about that {noun} -- the title, the due date, or a note?"
@@ -266,8 +290,8 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
         edits = {}
         if new_title is not None:
             edits["new_title"] = new_title
-        if new_due_at is not None:
-            edits["new_due_at"] = new_due_at
+        if new_due_at is not _DUE_UNCHANGED:
+            edits["new_due_at"] = new_due_at  # may genuinely be None -- that's the clear case
         if new_notes is not None:
             edits["new_notes"] = new_notes
 
@@ -280,8 +304,8 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
         bits = []
         if new_title is not None:
             bits.append(f"now titled \"{updated['title']}\"")
-        if new_due_at is not None:
-            bits.append(f"due {updated['due_at']}")
+        if new_due_at is not _DUE_UNCHANGED:
+            bits.append(f"due {updated['due_at']}" if updated["due_at"] else "due date removed")
         if new_notes is not None:
             bits.append("notes updated")
         await _reply(update, chat_id, f"Updated -- {', '.join(bits)}. Reply 'undo' if that's wrong.")

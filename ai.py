@@ -232,10 +232,19 @@ Respond with ONLY a JSON object, no other text, matching this shape:
 
   "day_stats_days_ago": integer or null (day_stats only -- which single day is being asked about, as a plain
     day count: 0 = today, 1 = yesterday/last night, 2 = two days ago, etc. Same discipline as logged_days_ago
-    above -- for an explicit weekday or calendar date ("stats for Saturday", "calories for the 20th"), compute
-    the count against "Today's actual date" at the top of this message; never output an actual date yourself.
-    Default to 0 (today) if the message asks for stats but doesn't name a day at all, e.g. "how am I doing
-    today calorie-wise"),
+    above -- for an explicit weekday, day-of-month, OR full "Month Day" calendar date ("stats for Saturday",
+    "calories for the 20th", "what did I log on July 15"), compute the count against "Today's actual date" at
+    the top of this message; never output an actual date yourself, and never leave this at 0 just because the
+    named date is far back or the arithmetic spans multiple months -- day_stats has no recency limit (see the
+    day_stats intent description above), so a distant date deserves the same careful count as a nearby one,
+    not a silent fallback to today.
+    Do the arithmetic properly for a cross-month date rather than eyeballing it: count the remaining days in
+    the named month from that date to its end, add every FULL month in between at that month's real day count,
+    then add the days elapsed so far in the current month. Worked example -- if "Today's actual date" is
+    2026-09-29 and the message names July 15: 16 remaining days in July (15th to 31st) + 31 days in August +
+    29 days elapsed in September (1st to 29th) = 76. So day_stats_days_ago = 76, not 0.
+    Default to 0 (today) only if the message asks for stats but doesn't name a day at all, e.g. "how am I doing
+    today calorie-wise" -- never as a fallback when a date was named but the count felt hard to work out),
 
   "lifts": [list of one or more objects, log_lift only -- ALWAYS a list, even for a single exercise, and
     however many distinct exercises are named in the message -- "pull-ups 10x3, then v-bar rows 35kg 8x3, then

@@ -32,6 +32,28 @@ def test_add_and_get_meal_roundtrip():
     assert row["meal_date"] == db.today_str()
 
 
+def test_get_recent_meals_orders_by_date_not_insertion_order():
+    """Regression test for a real bug: get_recent_meals used to order by
+    "id DESC" alone, so a historical backfill (which inserts old-dated
+    rows LAST, giving them the newest ids) could outrank a genuinely more
+    recent meal in "recent" lists -- see db.get_recent_meals's docstring
+    and the matching vitals.py bug this was first observed in."""
+    db.add_meal(CHAT, "Breakfast", ["toast"], 200, 300, 250, meal_date="2026-07-01")
+    db.add_meal(CHAT, "Lunch", ["salad"], 300, 400, 350, meal_date="2026-09-20")
+    # Inserted last (highest id), but dated before the Sept 20 entry above.
+    db.add_meal(CHAT, "Dinner", ["pasta"], 500, 700, 600, meal_date="2026-07-15")
+    dates = [m["meal_date"] for m in db.get_recent_meals(CHAT)]
+    assert dates == sorted(dates, reverse=True)
+
+
+def test_get_recent_workouts_orders_by_date_not_insertion_order():
+    db.add_workout(CHAT, "run", workout_date="2026-07-01")
+    db.add_workout(CHAT, "tennis", workout_date="2026-09-20")
+    db.add_workout(CHAT, "gym", workout_date="2026-07-15")  # inserted last, dated earliest of the three
+    dates = [w["workout_date"] for w in db.get_recent_workouts(CHAT)]
+    assert dates == sorted(dates, reverse=True)
+
+
 def test_daily_meal_totals_sum_same_day_only():
     db.add_meal(CHAT, "Snack", ["coke zero"], 0, 0, 0, water_ml=750)
     db.add_meal(CHAT, "Dinner", ["rice", "chicken"], 990, 1360, 1170, water_ml=None)

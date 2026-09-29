@@ -710,9 +710,17 @@ def add_meal(chat_id: int, meal_type: str | None, items: list[str] | None, calor
 
 
 def get_recent_meals(chat_id: int, limit: int = 10) -> list[dict]:
+    """Ordered by meal_date DESC (id DESC only as a same-day tiebreak), NOT
+    just id DESC -- a real observed bug: a historical backfill inserts old-
+    dated rows LAST, so they get the newest ids despite being the oldest
+    dates. Ordering by id alone then made a July entry outrank a genuinely
+    more recent live-logged one in every "recent" list (this function,
+    plus the vitals.py trend line and any 'edit/undo my last X' correction
+    that resolves against "the most recent" row) -- id no longer tracks
+    chronological order once any backfill/import has ever run."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM meals WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM meals WHERE chat_id = ? ORDER BY meal_date DESC, id DESC LIMIT ?",
             (chat_id, limit),
         ).fetchall()
         return [_meal_row(r) for r in rows]
@@ -864,9 +872,12 @@ def add_workout(chat_id: int, activity: str, duration_min: float | None = None,
 
 
 def get_recent_workouts(chat_id: int, limit: int = 10) -> list[dict]:
+    """Ordered by workout_date DESC (id DESC only as a same-day tiebreak) --
+    see get_recent_meals's docstring for why id alone isn't safe once a
+    historical backfill has ever inserted old-dated rows with new ids."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM workouts WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM workouts WHERE chat_id = ? ORDER BY workout_date DESC, id DESC LIMIT ?",
             (chat_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -1113,9 +1124,17 @@ def add_vitals(chat_id: int, weight_kg: float | None = None, sleep_hours: float 
 
 
 def get_recent_vitals(chat_id: int, limit: int = 10) -> list[dict]:
+    """Ordered by vitals_date DESC (id DESC only as a same-day tiebreak) --
+    see get_recent_meals's docstring for why id alone isn't safe once a
+    historical backfill has ever inserted old-dated rows with new ids.
+    This is a real, observed bug this fixes: after a July-September
+    backfill ran, _vitals_trend_text's "since last check-in" compared a
+    new entry against a stale July/September-11 row instead of a
+    genuinely more recent one, because id order no longer matched date
+    order for the stretch where backfilled and live-logged rows overlap."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM vitals WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM vitals WHERE chat_id = ? ORDER BY vitals_date DESC, id DESC LIMIT ?",
             (chat_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]

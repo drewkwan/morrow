@@ -173,6 +173,38 @@ def test_vitals_trend_text_returns_none_for_a_first_ever_checkin():
     assert bot._vitals_trend_text(CHAT, row) is None
 
 
+def test_vitals_trend_text_ignores_a_backfilled_row_inserted_after_a_newer_one():
+    """Regression test for a real reported bug: a historical backfill
+    inserts old-dated rows LAST, so they get higher ids than genuinely
+    more recent live-logged rows. get_recent_vitals used to order by
+    "id DESC" alone, so a July/August backfill row could outrank a real
+    September check-in in "recent" -- observed live as the trend line
+    comparing a new weigh-in against a stale 11 Sept row instead of a
+    real, more recent one from just a day or two before. Reproduces that
+    exact id-vs-date mismatch here."""
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date="2026-07-01")  # earliest by id AND date
+    db.add_vitals(CHAT, weight_kg=75.0, vitals_date="2026-09-20")  # a genuine, more recent live check-in
+    # Simulates the backfill step: inserted LAST (highest id so far), but dated
+    # well before the Sept 20 entry above -- the exact id-vs-date mismatch.
+    db.add_vitals(CHAT, weight_kg=72.0, vitals_date="2026-07-15")
+
+    new_id = db.add_vitals(CHAT, weight_kg=76.0, vitals_date="2026-09-29")
+    row = db.get_vitals(CHAT, new_id)
+    text = bot._vitals_trend_text(CHAT, row)
+
+    assert text is not None
+    assert "(2026-09-20)" in text  # the real most-recent-by-DATE row, not 07-15 or 07-01
+    assert "+1.0kg" in text  # 76.0 - 75.0, i.e. compared against the Sept 20 row
+
+
+def test_get_recent_vitals_orders_by_date_not_insertion_order():
+    db.add_vitals(CHAT, weight_kg=80.0, vitals_date="2026-07-01")
+    db.add_vitals(CHAT, weight_kg=75.0, vitals_date="2026-09-20")
+    db.add_vitals(CHAT, weight_kg=72.0, vitals_date="2026-07-15")  # inserted last, dated earliest of the three
+    dates = [v["vitals_date"] for v in db.get_recent_vitals(CHAT)]
+    assert dates == sorted(dates, reverse=True)
+
+
 def test_natural_language_log_vitals_shows_trend_against_last_checkin(monkeypatch):
     db.get_or_create_user(CHAT)
     db.add_vitals(CHAT, weight_kg=77.0, sleep_hours=6.0)

@@ -267,8 +267,15 @@ def test_resolve_day_counts_back_from_today():
     assert bot._resolve_day(1) == _days_ago(1)
 
 
-def test_resolve_day_clamps_to_two_weeks():
-    assert bot._resolve_day(999) == _days_ago(14)
+def test_resolve_day_is_not_clamped():
+    """Regression test for a real reported bug: _resolve_day used to
+    silently clamp anything past 14 days back to exactly 14 days ago, so
+    asking about a day months back would silently answer about the wrong
+    day instead. day_stats has no recency limit now -- db.py's own
+    get_meals_in_range/get_workouts_in_range/get_vitals_in_range are
+    themselves unbounded, so there's no reason for this to be capped."""
+    assert bot._resolve_day(999) == _days_ago(999)
+    assert bot._resolve_day(76) == _days_ago(76)
 
 
 # ---------- rundown.py: _day_stats_payload ----------

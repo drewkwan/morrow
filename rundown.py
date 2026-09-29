@@ -141,7 +141,7 @@ async def daystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days_ago = 1
     else:
         try:
-            days_ago = max(0, min(14, int(arg)))
+            days_ago = max(0, int(arg))
         except ValueError:
             await update.message.reply_text("Usage: /daystats [today|yesterday|N] -- N = days ago")
             return
@@ -156,8 +156,17 @@ def _resolve_day(days_ago: int | None) -> str:
     "leave the log on today, the DB default"), this always returns a
     concrete date, since a day_stats query has nothing to default onto --
     it has to know exactly which day to look up. days_ago None or 0 means
-    today."""
-    days_ago = max(0, min(14, int(days_ago))) if days_ago else 0
+    today.
+
+    Deliberately NOT capped. This used to silently clamp to 14 days back --
+    so "what did I log on July 15" (76 days ago) would silently resolve to
+    a DIFFERENT day 14 days back and answer about that instead, with no
+    indication a substitution happened. That's worse than just answering
+    honestly: db.get_meals_in_range/get_workouts_in_range/get_vitals_in_range
+    are themselves unbounded (see db.py), so there's no real reason to cap
+    this -- an old or out-of-range day just comes back as "nothing logged
+    that day" from _day_stats_payload, which is the truthful answer."""
+    days_ago = max(0, int(days_ago)) if days_ago else 0
     return (date.fromisoformat(db.today_str()) - timedelta(days=days_ago)).isoformat()
 
 

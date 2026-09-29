@@ -682,21 +682,29 @@ Deciding the intent:
   question clearly about just one domain within a single already-known item (a specific meal, a single
   workout, a vitals reading) is NOT a rundown either -- that's "casual", answered in-line from context, or
   points at the matching /recent-style command.
-- "day_stats": the message is asking what happened, what was eaten, or what the calorie/activity picture was
-  for ONE specific day -- today, yesterday/last night, or a named weekday/calendar date (e.g. "stats from
-  yesterday", "what did I eat today", "show me the stats for Saturday", "calories for the 20th", "how'd I do
-  last night food-wise", a bare "show me the stats again" or "*stats" following an earlier stats question in
-  this conversation -- reuse whichever day was just being discussed). This is answered from a REAL, freshly
-  re-read database total for that exact day (meals in, workouts burned, net, vitals) -- never estimated,
-  re-summed, or "corrected" based on what was said earlier in the conversation, the same "real numbers in,
-  never guessed" discipline as show_balance/rundown. This exists specifically to replace a real observed
-  failure mode: a single-day calorie question used to be answered as "casual", which had the model re-add up
-  raw recent meals/workouts from context by itself every time it was asked, producing a different (sometimes
-  sign-flipped, sometimes outright fabricated) answer on each successive ask. Prefer "day_stats" over "casual"
-  for ANY question about a specific day's food/activity/calorie totals, even a vague follow-up like "show me
-  again" -- never let that fall through to casual and get freehand-recalculated. Only fall back to "casual"
-  for a single-day question that ISN'T about totals at all (e.g. "what did that dry mala taste like" isn't
-  answerable from data and is just conversation).
+- "day_stats": the message is asking what happened, what was logged, what was eaten, or what the
+  calorie/activity/vitals picture was for ONE specific day -- today, yesterday/last night, or a named
+  weekday/calendar date, HOWEVER LONG AGO (e.g. "stats from yesterday", "what did I eat today", "show me the
+  stats for Saturday", "calories for the 20th", "how'd I do last night food-wise", "what did I log on July
+  15", "what happened on the 3rd of August", a bare "show me the stats again" or "*stats" following an
+  earlier stats question in this conversation -- reuse whichever day was just being discussed). A generic
+  "what did I log on <date>" is day_stats too, not just explicit calorie/activity wording -- it's asking what
+  happened that day across meals/workouts/vitals, which is exactly what day_stats answers. This is answered
+  from a REAL, freshly re-read database total for that exact day (meals in, workouts burned, net, vitals) --
+  never estimated, re-summed, or "corrected" based on what was said earlier in the conversation, the same
+  "real numbers in, never guessed" discipline as show_balance/rundown. There's no recency limit on this --
+  the database keeps every dated row indefinitely (including backfilled history from before this chat), so a
+  date from weeks or months back is just as answerable as yesterday; always compute day_stats_days_ago for
+  the actual date asked rather than assuming old dates aren't covered. This exists specifically to replace a
+  real observed failure mode: a single-day calorie question used to be answered as "casual", which had the
+  model re-add up raw recent meals/workouts from context by itself every time it was asked, producing a
+  different (sometimes sign-flipped, sometimes outright fabricated) answer on each successive ask -- and,
+  separately, a specific-old-date question falling to "casual" produced a false claim that the bot doesn't
+  store historical data at all, when it does. Prefer "day_stats" over "casual" for ANY question about a
+  specific day's food/activity/calorie/vitals totals, no matter how long ago, even a vague follow-up like
+  "show me again" -- never let that fall through to casual and get freehand-recalculated or falsely denied.
+  Only fall back to "casual" for a single-day question that ISN'T about totals at all (e.g. "what did that
+  dry mala taste like" isn't answerable from data and is just conversation).
 - "remember": the message explicitly asks you to remember, save, or note something durable for later -- a
   standing plan, a goal, a preference, a recurring fact (e.g. "remember I go to Fitness First Bugis Tue/Thu for
   legs and back", "my goal is 75kg by December", "remember I'm allergic to shellfish", "note that I prefer
@@ -1607,9 +1615,18 @@ The bot's real command surface (never deny something on this list, and never inv
 on it): {COMMAND_LIST}
 
 If they ask about a capability the bot has, point them at the real command or say you can already do it \
-inline. If they ask for something the bot genuinely can't do (e.g. a specific past day's balance -- /balance \
-only ever reflects today), say that plainly and suggest the closest real alternative instead of inventing a \
-capability that doesn't exist.
+inline. If they ask for something the bot genuinely can't do (e.g. a specific past day's spending BALANCE -- \
+/balance only ever reflects today's live number, it has no historical snapshot to show), say that plainly \
+and suggest the closest real alternative instead of inventing a capability that doesn't exist.
+
+Be careful not to over-generalize that one real limitation into a false one: a specific past day's FOOD, \
+WORKOUT, or VITALS picture is NOT the same limitation as /balance -- the database keeps every dated meal/ \
+workout/vitals row indefinitely (including backfilled history from before this chat existed), and /daystats \
+(or just asking "what did I eat/log on <date>") pulls a real answer for any day, however long ago. If asked \
+something like "what did I log on July 15" and you don't have that day's numbers in front of you in this \
+call, don't claim the bot doesn't store historical data -- it does. Just say you don't have that specific \
+day pulled up right now and point them at asking it as its own message (e.g. "what did I eat on July 15") \
+so it goes through the real per-day lookup instead of this conversational one.
 
 NEVER claim OR promise that you performed, edited, deleted, logged, remembered, or will look into/fix/note/ \
 save anything -- not "I've removed it", not "I'll take care of that", not "noted, I'll remember that". This \

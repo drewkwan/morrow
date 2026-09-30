@@ -254,6 +254,27 @@ def test_categorize_never_raises_on_api_failure(monkeypatch):
 # time context actually reaches the model call -- the model's own reasoning
 # from it isn't something a unit test can verify.
 
+# ---------- photo classification: TOTAL calories, not just the Move ring ----------
+# Regression guard for a real observed bug: an Apple Health/Fitness activity
+# screenshot shows at least two different calorie numbers -- the Move ring's
+# own big, bold headline figure against its goal (e.g. "772/700KCAL", active
+# calories only, excludes resting/BMR burn) and a much smaller "TOTAL X,XXX
+# KCAL" line printed just below the Move chart (the real day's total). The
+# bot kept logging calories_burned from the Move ring's headline number
+# (772) instead of the real total (2,762) sitting right below it, every
+# time -- not bad luck, a genuine gap in what the prompt told the model to
+# look for. Like the calorie_calibration regression above, a unit test can't
+# verify the model's own vision reasoning, only that the instruction telling
+# it to prefer the TOTAL line actually exists in the prompt it's given.
+
+def test_photo_classify_prompt_prefers_total_over_move_ring_figure():
+    prompt = ai.PHOTO_CLASSIFY_SYSTEM_PROMPT
+    assert "TOTAL" in prompt
+    assert "772/700KCAL" in prompt  # the actual real-world example that broke
+    assert "2,762 KCAL" in prompt
+    assert "EXCLUDES resting/BMR burn" in prompt
+
+
 class _CapturingFakeClient:
     """Like _FakeClient, but also records the kwargs each create() call
     received, so a test can inspect exactly what was sent to Claude."""
@@ -465,6 +486,39 @@ def test_parse_system_prompt_warns_against_deleting_instead_of_rescheduling():
 def test_clarify_fallback_includes_new_event_in_days():
     result = ai._clarify_fallback("huh?")
     assert result["new_event_in_days"] is None
+
+
+# ---------- event reschedule correction: matching the right leg of a batch ----------
+# Regression guards for a real observed bug: an itinerary logged several
+# events at once (a flight-out date, a return date, a landing date -- one
+# add_event row per leg, per the add_event rule), and one leg was logged
+# with the wrong date. A reply-style correction naming the leg's OLD (wrong)
+# date, e.g. "Saturday morning is October 3 not October 5", got "I'm not
+# sure which event you mean" instead of rescheduling the right one --
+# the "default to the assistant's last logged item" exception (written
+# only for edit_date) doesn't by itself say (a) it also covers reschedule,
+# the event-domain equivalent, and (b) how to pick ONE specific item out of
+# several the assistant just logged in the same turn, or that a message
+# naming the item's OLD/current date is a strong, safe match signal (as
+# opposed to matching on the NEW date, which is the real no-op trap the
+# original exception warns about).
+
+def test_parse_system_prompt_extends_last_logged_item_exception_to_reschedule():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "IMPORTANT exception for edit_date and" in prompt
+    assert "its event-domain equivalent, reschedule" in prompt
+
+
+def test_parse_system_prompt_prefers_matching_the_old_value_over_the_new_one():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "October 3 not October 5" in prompt  # the actual real-world example that broke
+    assert "searching that domain's recent list for the item that currently" in prompt
+
+
+def test_parse_system_prompt_covers_disambiguating_within_a_just_logged_batch():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "logged MULTIPLE" in prompt
+    assert "treat the whole batch as the" in prompt
 
 
 # ---------- log_lift vs remember: not primed by Morrow's own wording ----------

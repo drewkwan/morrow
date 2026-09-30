@@ -531,18 +531,41 @@ Deciding the intent:
   "workout"; a to-do title/deadline implies "task"; an appointment/schedule framing implies "event"; the words
   "balance", "rolled-over", or "deficit" with no specific item being referenced implies "balance" -- when
   genuinely ambiguous between domains, prefer whichever domain has an item matching the description/date, and if
-  more than one domain plausibly matches, use "clarification" instead). IMPORTANT exception for edit_date: a bare
+  more than one domain plausibly matches, use "clarification" instead). IMPORTANT exception for edit_date and
+  its event-domain equivalent, reschedule (an event's date field is "reschedule", never "edit_date" -- see
+  target_domain="event"'s own paragraph below -- but this exception applies to it the same way): a bare
   date-only correction with no other domain-identifying content at all (e.g. just "it's for 18 September",
   "that was last night", "for yesterday", no amount/food/workout words) is almost always fixing whatever the
   assistant's OWN immediately preceding reply in the conversation history just logged -- default target_domain
   to THAT domain and target THAT item's id, not a domain picked by searching recent lists for an item that
   already happens to have the mentioned date. That "matching date" search is for finding WHICH item the user
   means when several plausibly qualify (e.g. "the one from Monday" with two Monday expenses); it inverts badly
-  for edit_date, where the whole point is that the item currently has the WRONG date -- an item that already
-  carries the date the user just said is exactly the item that does NOT need this correction. Falling back to a
-  match against an unrelated domain's already-correctly-dated item instead of the domain that was just logged
-  into is a real observed bug: it silently no-ops (the date doesn't change because it already matched) and
-  leaves the actual wrong-dated item -- the one the user was clearly reacting to -- untouched. Once target_domain
+  when applied to the NEW date being given, where the whole point is that the item currently has the WRONG
+  date -- an item that already carries the NEW date the user just said is exactly the item that does NOT need
+  this correction. Falling back to a match against an unrelated domain's already-correctly-dated item instead
+  of the domain that was just logged into is a real observed bug: it silently no-ops (the date doesn't change
+  because it already matched) and leaves the actual wrong-dated item -- the one the user was clearly reacting
+  to -- untouched.
+  This is different from a message that names the CURRENT (soon-to-be-replaced) date directly, e.g. "Saturday
+  morning is October 3 not October 5" naming an already-logged October 5 -- that IS a safe, strong, preferred
+  match signal, not the no-op trap above: searching that domain's recent list for the item that currently
+  carries the OLD value named ("not October 5") correctly identifies exactly the wrong item that needs fixing,
+  precisely the opposite direction from matching on the NEW value. Prefer this whenever the message names an
+  old/current value being corrected away from, and only fall back to "default to the assistant's last logged
+  item" when no old value or other distinguishing detail is actually nameable.
+  A further real observed bug this covers: when the assistant's immediately preceding reply logged MULTIPLE
+  items at once in the same domain (e.g. several separate "add_event" legs from one itinerary message -- a
+  flight-out date, a return date, a landing date, each its own row per the add_event rule above), "default to
+  the assistant's last logged item" is not enough by itself, since there is no single "that item" -- picking
+  an arbitrary one from the batch (the most recently inserted row, or a guess) instead of the specific one the
+  message actually means is exactly how a correction like this can end up with a target_expense_id that isn't
+  really the right item, or isn't in the recent list at all. In that case, match the message's own content (an
+  old date it names, a day-of-week that corresponds to one of those items' own event_date, a distinguishing
+  word like "the flight home" or "the SF leg") against the SPECIFIC item within that just-logged batch it
+  actually refers to, the same as the general per-domain matching rule below -- treat the whole batch as the
+  candidate set to search, not just its last row. Only use "clarification" and ask which one if the message
+  truly gives nothing to disambiguate between them.
+  Once target_domain
   is settled, identify the ONE matching item in
   that domain's recent list -- match on
   whatever the message gives you: amount/description, OR just a date/day reference alone (e.g. "yesterday's
@@ -1087,6 +1110,18 @@ screen):
 activity/calorie summary rather than one named workout), "duration_min": number or null, "distance_km": number \
 or null, "calories_burned": number or null, "notes": short string for any other detail worth keeping (steps, \
 heart rate, active minutes) or null, "logged_days_ago": integer or null}}
+On an Apple Health/Fitness-style activity-rings screen specifically, at least two DIFFERENT calorie figures are \
+typically visible, and they are not interchangeable. The "Move" ring's own headline number (e.g. "772/700KCAL", \
+printed large and in color right under the word "Move") is that ring's active/exercise calories against its \
+own personal goal -- it EXCLUDES resting/BMR burn, so it is NOT the day's total energy expenditure. Separately, \
+usually printed in small plain text just below the Move ring's chart, is a line like "TOTAL 2,762 KCAL" -- THIS \
+is the real total calories burned for the day (active + resting), and calories_burned must be set from THIS \
+figure whenever it's visible on screen, even though it's much smaller and less visually prominent than the \
+Move ring's own bold number. A real observed bug this fixes: calories_burned kept getting set to the Move \
+ring's headline figure (the biggest, boldest number on the whole screen) while a "TOTAL" line sitting right \
+below it, showing the real day's total, was overlooked entirely -- actively scan for a distinct "TOTAL ... \
+KCAL" line near the Move chart and prefer it over the ring's own number. Only fall back to the Move ring's \
+figure if no such TOTAL line is visible anywhere on screen at all.
 
 3. Anything else -- a receipt, a document, an unrelated photo, or an image with no food or fitness data in it \
 at all:

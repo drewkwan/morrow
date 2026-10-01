@@ -308,6 +308,36 @@ def init_db() -> None:
         # that was never actually given the new column. Real production
         # incident this fixes -- see the regression test guarding it.
         _add_column_if_missing(conn, "tasks", "recurrence_frequency", "recurrence_frequency TEXT")
+        # subscriptions got a full schema redesign (billing_day/
+        # last_logged_month replaced by frequency/next_renewal_date/card/
+        # notes/is_claimable/last_logged_date -- see this table's own
+        # CREATE TABLE comment above) on the wrong assumption that the table
+        # didn't exist in production yet. It did -- an earlier push had
+        # already created it with the old columns, so (same lesson as the
+        # tasks.recurrence_frequency incident right above) CREATE TABLE IF
+        # NOT EXISTS silently left it in the old shape, and every new
+        # subscriptions function immediately broke with "no such column"
+        # against a live database with real rows. frequency and
+        # is_claimable get a literal DEFAULT in the ALTER itself (SQLite
+        # back-fills every existing row with it as part of adding the
+        # column, same as the users.current_streak/best_streak migrations
+        # above) -- next_renewal_date can't, since there's no one sensible
+        # default date, so it's added nullable and backfilled explicitly
+        # below, the same two-step pattern as expenses.amount_base above.
+        _add_column_if_missing(conn, "subscriptions", "frequency", "frequency TEXT NOT NULL DEFAULT 'monthly'")
+        _add_column_if_missing(conn, "subscriptions", "next_renewal_date", "next_renewal_date TEXT")
+        _add_column_if_missing(conn, "subscriptions", "card", "card TEXT")
+        _add_column_if_missing(conn, "subscriptions", "notes", "notes TEXT")
+        _add_column_if_missing(conn, "subscriptions", "is_claimable", "is_claimable INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "subscriptions", "last_logged_date", "last_logged_date TEXT")
+        # The old billing_day design was never actually used to log a real
+        # subscription in production (confirmed against Andrew's own
+        # backup db -- the table existed but held no real rows), so there's
+        # no real renewal date to reconstruct for any leftover row; today
+        # is a safe placeholder -- it just means subscriptions_tick would
+        # treat such a row as due on its next run, rather than leaving a
+        # NULL in a column every subscriptions query now expects to be set.
+        conn.execute("UPDATE subscriptions SET next_renewal_date = ? WHERE next_renewal_date IS NULL", (today_str(),))
 
 
 def _now_local_date() -> date:

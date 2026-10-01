@@ -515,3 +515,52 @@ def test_init_db_migrates_an_existing_tasks_table_to_add_recurrence_frequency():
     # And the column is actually usable going forward, not just present.
     task_id = db.add_task(CHAT, "new recurring to-do", recurrence_frequency="monthly")
     assert db.get_task(CHAT, task_id)["recurrence_frequency"] == "monthly"
+
+
+def test_init_db_migrates_an_existing_subscriptions_table_to_the_new_schema():
+    """Regression guard for a second real production incident, same root
+    cause as the tasks one above: the subscriptions schema redesign
+    (billing_day/last_logged_month -> frequency/next_renewal_date/card/
+    notes/is_claimable/last_logged_date) was built on the wrong assumption
+    that no subscriptions table existed in production yet -- it did, from
+    an earlier push, in the OLD shape. CREATE TABLE IF NOT EXISTS silently
+    left it there, and every new subscriptions function broke with
+    'sqlite3.OperationalError: no such column: next_renewal_date' against
+    the live database. Simulates that old-shape table directly (with a
+    pre-existing row, the way production actually had it), re-runs
+    init_db(), and checks every new column is both present and usable."""
+    with db.get_conn() as conn:
+        conn.execute("DROP TABLE subscriptions")
+        conn.execute(f"""
+            CREATE TABLE subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                amount REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT '{db.config.BASE_CURRENCY}',
+                amount_base REAL NOT NULL,
+                category TEXT,
+                billing_day INTEGER,
+                active INTEGER NOT NULL DEFAULT 1,
+                last_logged_month TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "INSERT INTO subscriptions (chat_id, name, amount, currency, amount_base, billing_day) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (CHAT, "pre-existing sub", 15.98, "SGD", 15.98, 25),
+        )
+
+    db.init_db()  # the same call app.py makes on every startup
+
+    row = db.get_subscriptions(CHAT)[0]
+    assert row["name"] == "pre-existing sub"
+    assert row["frequency"] == "monthly"  # DEFAULT applied to the pre-existing row
+    assert row["is_claimable"] == 0
+    assert row["next_renewal_date"] == db.today_str()  # backfilled placeholder, never left NULL
+    assert row["card"] is None
+    assert row["last_logged_date"] is None
+    # And every new column is actually usable going forward, not just present.
+    sub_id = db.add_subscription(CHAT, "new sub", 9.99, "SGD", "quarterly", "2027-01-01", card="OCBC")
+    assert db.get_subscription(CHAT, sub_id)["card"] == "OCBC"

@@ -477,3 +477,41 @@ def test_was_insight_sent_recently_respects_the_within_days_window():
     db.record_insight_sent(CHAT, "lift:stale:squat", sent_date=old_date)
     assert db.was_insight_sent_recently(CHAT, "lift:stale:squat", within_days=7) is False
     assert db.was_insight_sent_recently(CHAT, "lift:stale:squat", within_days=14) is True
+
+
+# ---------- init_db: forward-compatible migrations against an existing db ----------
+
+def test_init_db_migrates_an_existing_tasks_table_to_add_recurrence_frequency():
+    """Regression guard for a real production incident: adding a column to
+    the `tasks` CREATE TABLE statement does nothing for a database that
+    already has a `tasks` table from before that column existed --
+    CREATE TABLE IF NOT EXISTS is a no-op there. Without the matching
+    _add_column_if_missing call, every read of a pre-existing task row
+    (e.g. tasks._recent_tasks_for_ai, which runs on EVERY handle_text call)
+    raised KeyError: 'recurrence_frequency' against a live database that
+    was never actually given the new column. Simulates that "old-shape"
+    production table directly, then re-runs init_db() the same way the
+    app does on every startup, and checks the migration actually ran."""
+    with db.get_conn() as conn:
+        conn.execute("DROP TABLE tasks")
+        conn.execute("""
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                due_at TEXT,
+                done INTEGER NOT NULL DEFAULT 0,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("INSERT INTO tasks (chat_id, title) VALUES (?, ?)", (CHAT, "pre-existing to-do"))
+
+    db.init_db()  # the same call app.py makes on every startup
+
+    row = db.get_recent_tasks(CHAT, limit=1)[0]
+    assert row["title"] == "pre-existing to-do"
+    assert row["recurrence_frequency"] is None  # column exists now, old row reads as "not recurring"
+    # And the column is actually usable going forward, not just present.
+    task_id = db.add_task(CHAT, "new recurring to-do", recurrence_frequency="monthly")
+    assert db.get_task(CHAT, task_id)["recurrence_frequency"] == "monthly"

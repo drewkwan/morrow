@@ -298,6 +298,16 @@ def init_db() -> None:
         # Backfill amount_base for any pre-existing rows (assume same as amount if it was null).
         conn.execute("UPDATE expenses SET amount_base = amount WHERE amount_base IS NULL")
         _add_column_if_missing(conn, "workouts", "calories_burned", "calories_burned REAL")
+        # tasks.recurrence_frequency was added to the CREATE TABLE above for
+        # recurring to-dos (see add_task's docstring), but CREATE TABLE IF
+        # NOT EXISTS is a no-op against an existing database -- tasks is a
+        # long-standing table with real production rows already, so without
+        # this migration call, every read of a pre-existing task row (e.g.
+        # tasks._recent_tasks_for_ai, which runs on EVERY handle_text call)
+        # raises KeyError: 'recurrence_frequency' against a live database
+        # that was never actually given the new column. Real production
+        # incident this fixes -- see the regression test guarding it.
+        _add_column_if_missing(conn, "tasks", "recurrence_frequency", "recurrence_frequency TEXT")
 
 
 def _now_local_date() -> date:

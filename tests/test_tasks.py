@@ -430,3 +430,237 @@ def test_done_command_with_unknown_id():
     context.args = ["9999"]
     _run(bot.done_cmd(update, context))
     assert any("Couldn't find" in r for r in update.message.replies)
+
+
+# ---------- recurring tasks ----------
+#
+# A task can now carry a recurrence_frequency (one of db.RECURRENCE_
+# FREQUENCIES) making it a RECURRING to-do -- "done" means "done for this
+# cycle" (advance due_at, stay open), not permanently closed. Covers
+# db.py's add_task/mark_task_done/unmark_task_done/edit_task recurrence
+# handling, correction.py's recurrence-aware mark_done/edit_task branches
+# (including undo), and the natural-language log_task/edit_task paths.
+
+def test_add_task_with_recurrence_is_stored():
+    task_id = db.add_task(CHAT, "claim gym membership", due_at=_in_days(5), recurrence_frequency="monthly")
+    row = db.get_task(CHAT, task_id)
+    assert row["recurrence_frequency"] == "monthly"
+
+
+def test_add_task_rejects_an_unknown_recurrence_value():
+    """A typo'd or bogus cadence should fall back to a plain one-off task,
+    not silently corrupt the column -- mirrors db.add_subscription's own
+    frequency fallback."""
+    task_id = db.add_task(CHAT, "something", recurrence_frequency="daily")
+    assert db.get_task(CHAT, task_id)["recurrence_frequency"] is None
+
+
+def test_mark_task_done_on_recurring_task_advances_due_date_and_stays_open():
+    """The core behavior change: unlike a plain to-do, marking a recurring
+    task done must NOT set done=1 -- it should resurface next cycle."""
+    task_id = db.add_task(CHAT, "claim gym membership", due_at=_in_days(3), recurrence_frequency="monthly")
+    updated = db.mark_task_done(CHAT, task_id)
+    assert updated["done"] == 0
+    today_due = dt.date.fromisoformat(_in_days(3))
+    expected_next = db.advance_date_by_frequency(today_due, "monthly")
+    assert updated["due_at"] == expected_next.isoformat()
+    # It's still open, so it shows up in /tasks again.
+    assert task_id in {r["id"] for r in db.get_open_tasks(CHAT)}
+
+
+def test_mark_task_done_on_recurring_task_with_no_due_at_anchors_on_today():
+    task_id = db.add_task(CHAT, "weekly review", recurrence_frequency="weekly")
+    updated = db.mark_task_done(CHAT, task_id)
+    today = dt.date.fromisoformat(db.today_str())
+    assert updated["due_at"] == (today + dt.timedelta(days=7)).isoformat()
+
+
+def test_mark_task_done_on_recurring_task_preserves_time_of_day():
+    task_id = db.add_task(CHAT, "pay insurance", due_at=f"{_in_days(2)} 09:00", recurrence_frequency="annual")
+    updated = db.mark_task_done(CHAT, task_id)
+    assert updated["due_at"].endswith(" 09:00")
+
+
+def test_unmark_task_done_on_plain_task_flips_done_back():
+    task_id = db.add_task(CHAT, "buy milk")
+    db.mark_task_done(CHAT, task_id)
+    reopened = db.unmark_task_done(CHAT, task_id)
+    assert reopened["done"] == 0
+
+
+def test_unmark_task_done_on_recurring_task_restores_old_due_at():
+    task_id = db.add_task(CHAT, "claim gym membership", due_at=_in_days(3), recurrence_frequency="monthly")
+    old_due_at = db.get_task(CHAT, task_id)["due_at"]
+    db.mark_task_done(CHAT, task_id)
+    reverted = db.unmark_task_done(CHAT, task_id, restore_due_at=old_due_at)
+    assert reverted["due_at"] == old_due_at
+    assert reverted["done"] == 0
+
+
+def test_edit_task_can_set_recurrence_on_an_existing_one_off():
+    task_id = db.add_task(CHAT, "review budget")
+    updated = db.edit_task(CHAT, task_id, new_recurrence_frequency="quarterly")
+    assert updated["recurrence_frequency"] == "quarterly"
+
+
+def test_edit_task_can_clear_recurrence_back_to_one_off():
+    task_id = db.add_task(CHAT, "review budget", recurrence_frequency="quarterly")
+    updated = db.edit_task(CHAT, task_id, new_recurrence_frequency=None)
+    assert updated["recurrence_frequency"] is None
+
+
+def test_edit_task_leaves_recurrence_untouched_when_not_passed():
+    task_id = db.add_task(CHAT, "review budget", recurrence_frequency="quarterly")
+    updated = db.edit_task(CHAT, task_id, new_title="review the annual budget")
+    assert updated["recurrence_frequency"] == "quarterly"
+
+
+def test_restore_deleted_task_preserves_recurrence():
+    task_id = db.add_task(CHAT, "claim gym membership", recurrence_frequency="monthly")
+    deleted = db.delete_task(CHAT, task_id)
+    restored = db.restore_deleted_task(CHAT, deleted)
+    assert restored["recurrence_frequency"] == "monthly"
+
+
+def test_task_line_shows_a_recurrence_tag():
+    from formatting import _task_line
+    task_id = db.add_task(CHAT, "claim gym membership", recurrence_frequency="monthly")
+    row = db.get_task(CHAT, task_id)
+    assert "repeats monthly" in _task_line(row)
+
+
+def test_natural_language_log_task_with_recurrence_creates_a_recurring_task(monkeypatch):
+    db.get_or_create_user(CHAT)
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
+        return {
+            "intent": "log_task",
+            "tasks": [{"title": "claim gym membership", "due_in_days": 3, "due_time": None, "notes": None,
+                       "recurrence": "monthly"}],
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="add a task to claim my gym membership every month")
+    _run(bot.handle_text(update, FakeContext()))
+    row = db.get_open_tasks(CHAT)[0]
+    assert row["recurrence_frequency"] == "monthly"
+    assert "repeats monthly" in update.message.replies[-1]
+
+
+def test_natural_language_log_task_with_unrecognized_recurrence_falls_back_to_one_off(monkeypatch):
+    db.get_or_create_user(CHAT)
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
+        return {
+            "intent": "log_task",
+            "tasks": [{"title": "buy milk", "due_in_days": None, "due_time": None, "notes": None,
+                       "recurrence": "sometimes"}],
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="add buy milk to my list")
+    _run(bot.handle_text(update, FakeContext()))
+    row = db.get_open_tasks(CHAT)[0]
+    assert row["recurrence_frequency"] is None
+
+
+def test_correction_mark_done_on_recurring_task_advances_instead_of_closing(monkeypatch):
+    db.get_or_create_user(CHAT)
+    task_id = db.add_task(CHAT, "claim gym membership", due_at=_in_days(3), recurrence_frequency="monthly")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
+        return {
+            "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
+            "correction_action": "mark_done", "days_ago": None,
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="done claiming my gym membership this month")
+    _run(bot.handle_text(update, FakeContext()))
+    row = db.get_task(CHAT, task_id)
+    assert row["done"] == 0  # never closes for a recurring task
+    assert row["due_at"] != _in_days(3)  # advanced to the next cycle
+    assert any("next up" in r for r in update.message.replies)
+
+
+def test_undo_reverts_a_recurring_task_mark_done_to_the_old_due_date(monkeypatch):
+    db.get_or_create_user(CHAT)
+    task_id = db.add_task(CHAT, "claim gym membership", due_at=_in_days(3), recurrence_frequency="monthly")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
+        return {
+            "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
+            "correction_action": "mark_done", "days_ago": None,
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    context = FakeContext()
+    done_update = FakeUpdate(CHAT, text="done claiming my gym membership this month")
+    _run(bot.handle_text(done_update, context))
+    assert db.get_task(CHAT, task_id)["due_at"] != _in_days(3)
+
+    undo_update = FakeUpdate(CHAT, text="undo")
+    _run(bot.handle_text(undo_update, context))
+    assert db.get_task(CHAT, task_id)["due_at"] == _in_days(3)
+
+
+def test_correction_edit_task_can_make_an_existing_task_recurring(monkeypatch):
+    db.get_or_create_user(CHAT)
+    task_id = db.add_task(CHAT, "review budget")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
+        return {
+            "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
+            "correction_action": "edit_task", "new_task_recurrence": "quarterly",
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="actually make that a quarterly thing")
+    _run(bot.handle_text(update, FakeContext()))
+    assert db.get_task(CHAT, task_id)["recurrence_frequency"] == "quarterly"
+    assert "repeats quarterly" in update.message.replies[-1]
+
+
+def test_correction_edit_task_can_remove_recurrence_and_undo_restores_it(monkeypatch):
+    db.get_or_create_user(CHAT)
+    task_id = db.add_task(CHAT, "claim gym membership", recurrence_frequency="monthly")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
+        return {
+            "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
+            "correction_action": "edit_task", "remove_recurrence": True,
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    context = FakeContext()
+    edit_update = FakeUpdate(CHAT, text="stop reminding me about that every month")
+    _run(bot.handle_text(edit_update, context))
+    assert db.get_task(CHAT, task_id)["recurrence_frequency"] is None
+
+    undo_update = FakeUpdate(CHAT, text="undo")
+    _run(bot.handle_text(undo_update, context))
+    assert db.get_task(CHAT, task_id)["recurrence_frequency"] == "monthly"

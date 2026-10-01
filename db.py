@@ -183,6 +183,7 @@ def init_db() -> None:
                 due_at TEXT,
                 done INTEGER NOT NULL DEFAULT 0,
                 notes TEXT,
+                recurrence_frequency TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
@@ -236,9 +237,13 @@ def init_db() -> None:
                 currency TEXT NOT NULL DEFAULT '{config.BASE_CURRENCY}',
                 amount_base REAL NOT NULL,
                 category TEXT,
-                billing_day INTEGER NOT NULL,
+                frequency TEXT NOT NULL DEFAULT 'monthly',
+                next_renewal_date TEXT NOT NULL,
+                card TEXT,
+                notes TEXT,
+                is_claimable INTEGER NOT NULL DEFAULT 0,
                 active INTEGER NOT NULL DEFAULT 1,
-                last_logged_month TEXT,
+                last_logged_date TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
@@ -1375,12 +1380,23 @@ def restore_deleted_memory(chat_id: int, row: dict) -> dict | None:
 
 # ---------- tasks ----------
 
-def add_task(chat_id: int, title: str, due_at: str | None = None, notes: str | None = None) -> int:
+def add_task(chat_id: int, title: str, due_at: str | None = None, notes: str | None = None,
+             recurrence_frequency: str | None = None) -> int:
+    """recurrence_frequency (one of db.RECURRENCE_FREQUENCIES, or None for a
+    plain one-off to-do) makes this a RECURRING task -- see mark_task_done's
+    docstring for what that changes about "done". Deliberately its own
+    optional field on the existing tasks table rather than a second table:
+    a recurring task is still fundamentally a to-do (title, due date,
+    notes, open/not-open) with one extra piece of config, so it reuses
+    every existing to-do code path (/tasks, /done, correction.py's
+    edit_task) instead of duplicating them for a second domain."""
     get_or_create_user(chat_id)
+    if recurrence_frequency is not None and recurrence_frequency not in RECURRENCE_FREQUENCIES:
+        recurrence_frequency = None
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO tasks (chat_id, title, due_at, notes) VALUES (?, ?, ?, ?)",
-            (chat_id, title, due_at, notes),
+            "INSERT INTO tasks (chat_id, title, due_at, notes, recurrence_frequency) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, title, due_at, notes, recurrence_frequency),
         )
         return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
@@ -1429,43 +1445,91 @@ def edit_task_due(chat_id: int, task_id: int, new_due_at: str | None) -> dict | 
     return get_task(chat_id, task_id)
 
 
-def edit_task(chat_id: int, task_id: int, new_title=_UNSET, new_due_at=_UNSET, new_notes=_UNSET) -> dict | None:
-    """General to-do editor -- title, due date, and notes can each change
-    independently in one call, whichever combination the correction
-    actually implies (e.g. "push #11 to tomorrow, I need Shardul's address"
-    reschedules AND adds a note in one shot). Pass a real value (including
-    None) for a field to change it; omit a field entirely to leave it
-    untouched -- see _UNSET's docstring for why that's not the same as
-    passing None."""
+def edit_task(chat_id: int, task_id: int, new_title=_UNSET, new_due_at=_UNSET, new_notes=_UNSET,
+              new_recurrence_frequency=_UNSET) -> dict | None:
+    """General to-do editor -- title, due date, notes, and recurrence can
+    each change independently in one call, whichever combination the
+    correction actually implies (e.g. "push #11 to tomorrow, I need
+    Shardul's address" reschedules AND adds a note in one shot). Pass a
+    real value (including None) for a field to change it; omit a field
+    entirely to leave it untouched -- see _UNSET's docstring for why that's
+    not the same as passing None. new_recurrence_frequency follows the same
+    rule as new_due_at: pass one of RECURRENCE_FREQUENCIES to make/keep a
+    task recurring, or None to make it (or keep it) a plain one-off --
+    e.g. "stop reminding me about this every month" is new_recurrence_
+    frequency=None, not _UNSET."""
     row = get_task(chat_id, task_id)
     if row is None:
         return None
     final_title = row["title"] if new_title is _UNSET else new_title
     final_due_at = row["due_at"] if new_due_at is _UNSET else new_due_at
     final_notes = row["notes"] if new_notes is _UNSET else new_notes
+    if new_recurrence_frequency is _UNSET:
+        final_recurrence_frequency = row["recurrence_frequency"]
+    elif new_recurrence_frequency is None or new_recurrence_frequency in RECURRENCE_FREQUENCIES:
+        final_recurrence_frequency = new_recurrence_frequency
+    else:
+        final_recurrence_frequency = row["recurrence_frequency"]
     with get_conn() as conn:
         conn.execute(
-            "UPDATE tasks SET title = ?, due_at = ?, notes = ? WHERE id = ? AND chat_id = ?",
-            (final_title, final_due_at, final_notes, task_id, chat_id),
+            "UPDATE tasks SET title = ?, due_at = ?, notes = ?, recurrence_frequency = ? "
+            "WHERE id = ? AND chat_id = ?",
+            (final_title, final_due_at, final_notes, final_recurrence_frequency, task_id, chat_id),
         )
     return get_task(chat_id, task_id)
 
 
 def mark_task_done(chat_id: int, task_id: int) -> dict | None:
+    """For a plain one-off to-do, closes it permanently (done=1), same as
+    always. For a RECURRING task (recurrence_frequency set -- see add_task),
+    "done" means "done for THIS cycle", not gone for good: instead of
+    closing it, this advances due_at to the next occurrence (via
+    advance_date_by_frequency, anchored on the current due_at, or today if
+    it had none) and leaves it open (done stays 0), so it resurfaces on
+    /tasks again next cycle without the user re-adding it. A time-of-day
+    component on the old due_at (e.g. "2026-10-10 17:00") is preserved on
+    the new date rather than silently dropped."""
     row = get_task(chat_id, task_id)
     if row is None:
         return None
+    if row["recurrence_frequency"]:
+        due_at = row["due_at"]
+        if due_at:
+            date_part, _, time_part = due_at.partition(" ")
+            anchor = date.fromisoformat(date_part)
+        else:
+            anchor = date.fromisoformat(today_str())
+            time_part = None
+        new_due_date = advance_date_by_frequency(anchor, row["recurrence_frequency"])
+        new_due_at = f"{new_due_date.isoformat()} {time_part}" if time_part else new_due_date.isoformat()
+        with get_conn() as conn:
+            conn.execute("UPDATE tasks SET due_at = ? WHERE id = ? AND chat_id = ?", (new_due_at, task_id, chat_id))
+        return get_task(chat_id, task_id)
     with get_conn() as conn:
         conn.execute("UPDATE tasks SET done = 1 WHERE id = ? AND chat_id = ?", (task_id, chat_id))
     return get_task(chat_id, task_id)
 
 
-def unmark_task_done(chat_id: int, task_id: int) -> dict | None:
-    """Undo for mark_task_done -- flips done back to 0 rather than
-    restoring a deleted row, since marking done never deletes anything."""
+def unmark_task_done(chat_id: int, task_id: int, restore_due_at=_UNSET) -> dict | None:
+    """Undo for mark_task_done. For a one-off task, flips done back to 0
+    (it never deleted anything). For a RECURRING task's "done for this
+    cycle" (which never set done=1 at all -- see mark_task_done), this
+    instead reverts due_at back to what it was before that cycle was
+    completed; the caller must pass the snapshot's old due_at as
+    restore_due_at for a recurring task's undo to actually work (a missing
+    restore_due_at on a recurring task is a caller bug, not a silent
+    no-op -- but falls back to the done=0 flip rather than raising, so a
+    missing snapshot degrades to "nothing visibly changes" instead of a
+    crash)."""
     row = get_task(chat_id, task_id)
     if row is None:
         return None
+    if row["recurrence_frequency"] and restore_due_at is not _UNSET:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE tasks SET due_at = ? WHERE id = ? AND chat_id = ?", (restore_due_at, task_id, chat_id)
+            )
+        return get_task(chat_id, task_id)
     with get_conn() as conn:
         conn.execute("UPDATE tasks SET done = 0 WHERE id = ? AND chat_id = ?", (task_id, chat_id))
     return get_task(chat_id, task_id)
@@ -1483,8 +1547,9 @@ def delete_task(chat_id: int, task_id: int) -> dict | None:
 def restore_deleted_task(chat_id: int, row: dict) -> dict | None:
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO tasks (chat_id, title, due_at, done, notes) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, row["title"], row["due_at"], row["done"], row["notes"]),
+            "INSERT INTO tasks (chat_id, title, due_at, done, notes, recurrence_frequency) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, row["title"], row["due_at"], row["done"], row["notes"], row.get("recurrence_frequency")),
         )
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
     return get_task(chat_id, new_id)
@@ -1708,37 +1773,91 @@ def day_matches_billing_day(day: date, billing_day: int) -> bool:
     (1-31) in day's own month -- clamped to that month's real last day for
     a billing_day that doesn't exist in every month (e.g. 31 in a 30-day
     month, or in February), rather than silently skipping those months
-    entirely or rolling over into the next one. Shared by subscriptions.py's
-    and income.py's daily auto-post ticks -- both are "does today match this
-    recurring monthly day" checks, just crediting instead of debiting."""
+    entirely or rolling over into the next one. Used by income.py's
+    income_tick for the recurring-salary pay day, which is always a plain
+    monthly day-of-month -- subscriptions now use the more general
+    advance_date_by_frequency below instead (not every subscription bills
+    monthly), but a salary's pay day never needed anything richer than
+    this, so it keeps its own simpler helper rather than being forced
+    through the frequency machinery for no real benefit."""
     from calendar import monthrange
     last_day_of_month = monthrange(day.year, day.month)[1]
     return day.day == min(int(billing_day), last_day_of_month)
 
 
+# Every recurring cadence subscriptions and recurring tasks can both use --
+# a shared vocabulary so advance_date_by_frequency (below) is the one
+# "what's the next occurrence" implementation for both domains, rather than
+# two copies that could drift apart.
+RECURRENCE_FREQUENCIES = ("weekly", "biweekly", "monthly", "quarterly", "annual")
+
+
+def advance_date_by_frequency(d: date, frequency: str) -> date:
+    """Computes the next occurrence of a recurring date after `d`, for one
+    of RECURRENCE_FREQUENCIES. "weekly"/"biweekly" are a plain fixed-day
+    offset; "monthly"/"quarterly"/"annual" use real calendar month/year
+    arithmetic rather than a fixed day count, clamping the day-of-month to
+    the target month's real last day (e.g. the 31st of a subscription that
+    renews monthly lands on the 30th in a 30-day month, the 28th/29th in
+    February) -- the same clamping discipline day_matches_billing_day
+    already used for salary pay days, generalized here to cover any
+    calendar-based cadence, not just "every month". Shared by
+    subscriptions.subscriptions_tick (advancing next_renewal_date) and
+    db.mark_task_done (advancing a recurring task's due_at) -- one
+    implementation for "what's the next occurrence", not two that could
+    silently diverge on the leap-year/short-month edge cases."""
+    if frequency not in RECURRENCE_FREQUENCIES:
+        raise ValueError(f"Unknown recurrence frequency: {frequency!r}")
+    if frequency == "weekly":
+        return d + timedelta(days=7)
+    if frequency == "biweekly":
+        return d + timedelta(days=14)
+    from calendar import monthrange
+    months_to_add = {"monthly": 1, "quarterly": 3, "annual": 12}[frequency]
+    total_month_index = (d.month - 1) + months_to_add
+    target_year = d.year + total_month_index // 12
+    target_month = total_month_index % 12 + 1
+    last_day_of_target_month = monthrange(target_year, target_month)[1]
+    target_day = min(d.day, last_day_of_target_month)
+    return date(target_year, target_month, target_day)
+
+
 # ---------- subscriptions ----------
 #
-# Recurring monthly charges (Netflix, gym, etc.) that auto-log THEMSELVES as
-# a real expense on their billing day every month -- see
-# subscriptions.subscriptions_tick for the daily job that drives this. Each
-# subscription row here is pure config (name/amount/currency/billing_day);
-# the actual spend each cycle lands as an ordinary row in `expenses`, so
-# it's visible to /balance, /rundown, /trend, and correctable the exact
-# same way as any other expense -- there's deliberately no special-cased
-# "undo a subscription charge" path here, since editing/deleting that
-# month's auto-logged expense already covers it.
+# Recurring charges (Netflix, gym, insurance, etc.) that auto-log
+# THEMSELVES as a real expense on their renewal date -- see
+# subscriptions.subscriptions_tick for the daily job that drives this.
+# Each subscription row here is pure config (name/amount/currency/
+# frequency/next_renewal_date, plus card/notes/is_claimable for anything
+# that needs it); the actual spend each cycle lands as an ordinary row in
+# `expenses`, so it's visible to /balance, /rundown, /trend, and
+# correctable the exact same way as any other expense -- there's
+# deliberately no special-cased "undo a subscription charge" path here,
+# since editing/deleting that cycle's auto-logged expense already covers
+# it. is_claimable flows straight through to that expense row (see
+# subscriptions_tick), so a subscription you expense to your employer
+# (e.g. a gym membership) shows up in /claimed the normal way, with no
+# separate claimable-subscriptions concept needed.
+#
+# Unlike the old billing_day (1-31, monthly-only) design, next_renewal_date
+# is a real ISO date and frequency says how far to jump forward after each
+# post (see advance_date_by_frequency above) -- this is what makes
+# quarterly/annual/biweekly subscriptions (not just monthly ones)
+# representable at all.
 
-def add_subscription(chat_id: int, name: str, amount: float, currency: str, billing_day: int,
-                      category: str | None = None) -> int:
+def add_subscription(chat_id: int, name: str, amount: float, currency: str, frequency: str,
+                      next_renewal_date: str, category: str | None = None, card: str | None = None,
+                      notes: str | None = None, is_claimable: bool = False) -> int:
     get_or_create_user(chat_id)
     currency = (currency or config.BASE_CURRENCY).upper()
     amount_base = fx.to_base(amount, currency)
-    billing_day = max(1, min(31, int(billing_day)))
+    frequency = frequency if frequency in RECURRENCE_FREQUENCIES else "monthly"
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO subscriptions (chat_id, name, amount, currency, amount_base, category, billing_day) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, name, amount, currency, amount_base, category, billing_day),
+            "INSERT INTO subscriptions (chat_id, name, amount, currency, amount_base, category, frequency, "
+            "next_renewal_date, card, notes, is_claimable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, name, amount, currency, amount_base, category, frequency, next_renewal_date, card,
+             notes, bool(is_claimable)),
         )
         return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
@@ -1752,14 +1871,14 @@ def get_subscription(chat_id: int, subscription_id: int) -> dict | None:
 
 
 def get_subscriptions(chat_id: int, active_only: bool = True) -> list[dict]:
-    """Ordered by billing_day then name -- a predictable, calendar-shaped
-    list rather than insertion order, so /subscriptions reads like a
-    month-at-a-glance rather than a log of when each was added."""
+    """Ordered by next_renewal_date then name -- a predictable, calendar-
+    shaped list (soonest renewal first) rather than insertion order, so
+    /subscriptions and the weekly renewal digest both read naturally."""
     query = "SELECT * FROM subscriptions WHERE chat_id = ?"
     params: list = [chat_id]
     if active_only:
         query += " AND active = 1"
-    query += " ORDER BY billing_day, name"
+    query += " ORDER BY next_renewal_date, name"
     with get_conn() as conn:
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
@@ -1774,26 +1893,34 @@ def delete_subscription(chat_id: int, subscription_id: int) -> dict | None:
     return row
 
 
-def mark_subscription_logged(subscription_id: int, month_str: str) -> None:
-    """month_str is "YYYY-MM" -- the real guard against double-logging the
-    same subscription twice in one billing cycle (e.g. if the daily tick
-    somehow runs more than once on its billing day, or the bot restarts)."""
+def advance_subscription(subscription_id: int, logged_date: str, new_next_renewal_date: str) -> None:
+    """Called right after subscriptions_tick posts one cycle's expense --
+    records last_logged_date (the idempotency guard against a same-day job
+    retry or bot restart double-charging) and advances next_renewal_date to
+    the following cycle, in one update. Once this runs, next_renewal_date
+    no longer equals today, so a second tick call today naturally won't
+    match it again -- last_logged_date is a belt-and-suspenders backstop,
+    not the only thing standing between here and a double charge."""
     with get_conn() as conn:
         conn.execute(
-            "UPDATE subscriptions SET last_logged_month = ? WHERE id = ?", (month_str, subscription_id)
+            "UPDATE subscriptions SET last_logged_date = ?, next_renewal_date = ? WHERE id = ?",
+            (logged_date, new_next_renewal_date, subscription_id),
         )
 
 
 def edit_subscription(chat_id: int, subscription_id: int, new_name=_UNSET, new_amount=_UNSET,
-                       new_currency=_UNSET, new_billing_day=_UNSET, new_category=_UNSET) -> dict | None:
-    """Corrects a subscription's own config (a price change, a billing-day
-    move, a rename) in place -- deliberately NOT the same thing as correcting
-    one month's already-posted charge in `expenses` (see this module's
-    "no special-cased undo a subscription charge" note above, which is still
-    true and still a separate concern). Mirrors edit_meal's _UNSET "only
-    touch what's passed" discipline. last_logged_month is never touched here
-    -- a price or billing-day correction shouldn't retroactively re-trigger
-    (or re-skip) this month's auto-post."""
+                       new_currency=_UNSET, new_frequency=_UNSET, new_next_renewal_date=_UNSET,
+                       new_category=_UNSET, new_card=_UNSET, new_notes=_UNSET,
+                       new_is_claimable=_UNSET) -> dict | None:
+    """Corrects a subscription's own config (a price change, a renewal-date
+    move, a frequency change, a rename) in place -- deliberately NOT the
+    same thing as correcting one cycle's already-posted charge in
+    `expenses` (see this module's "no special-cased undo a subscription
+    charge" note above, which is still true and still a separate concern).
+    Mirrors edit_meal's _UNSET "only touch what's passed" discipline.
+    last_logged_date is never touched here -- a price, date, or frequency
+    correction shouldn't retroactively re-trigger (or re-skip) the cycle
+    that already posted."""
     row = get_subscription(chat_id, subscription_id)
     if row is None:
         return None
@@ -1801,13 +1928,19 @@ def edit_subscription(chat_id: int, subscription_id: int, new_name=_UNSET, new_a
     final_amount = row["amount"] if new_amount is _UNSET else new_amount
     final_currency = row["currency"] if new_currency is _UNSET else (new_currency or config.BASE_CURRENCY).upper()
     final_category = row["category"] if new_category is _UNSET else new_category
-    if new_billing_day is _UNSET:
-        final_billing_day = row["billing_day"]
+    final_card = row["card"] if new_card is _UNSET else new_card
+    final_notes = row["notes"] if new_notes is _UNSET else new_notes
+    final_is_claimable = row["is_claimable"] if new_is_claimable is _UNSET else bool(new_is_claimable)
+    if new_frequency is _UNSET:
+        final_frequency = row["frequency"]
     else:
-        final_billing_day = max(1, min(31, int(new_billing_day)))
+        final_frequency = new_frequency if new_frequency in RECURRENCE_FREQUENCIES else row["frequency"]
+    final_next_renewal_date = (
+        row["next_renewal_date"] if new_next_renewal_date is _UNSET else new_next_renewal_date
+    )
     # Only re-convert to base currency if the amount or currency actually
-    # changed -- avoids a pointless extra FX lookup on a rename/billing-day-
-    # only edit, and avoids drift from re-converting at a possibly different
+    # changed -- avoids a pointless extra FX lookup on a rename/date-only
+    # edit, and avoids drift from re-converting at a possibly different
     # exchange rate than when it was first added.
     if new_amount is _UNSET and new_currency is _UNSET:
         final_amount_base = row["amount_base"]
@@ -1816,28 +1949,32 @@ def edit_subscription(chat_id: int, subscription_id: int, new_name=_UNSET, new_a
     with get_conn() as conn:
         conn.execute(
             "UPDATE subscriptions SET name = ?, amount = ?, currency = ?, amount_base = ?, "
-            "category = ?, billing_day = ? WHERE id = ? AND chat_id = ?",
-            (final_name, final_amount, final_currency, final_amount_base, final_category,
-             final_billing_day, subscription_id, chat_id),
+            "category = ?, frequency = ?, next_renewal_date = ?, card = ?, notes = ?, is_claimable = ? "
+            "WHERE id = ? AND chat_id = ?",
+            (final_name, final_amount, final_currency, final_amount_base, final_category, final_frequency,
+             final_next_renewal_date, final_card, final_notes, final_is_claimable, subscription_id, chat_id),
         )
     return get_subscription(chat_id, subscription_id)
 
 
 def restore_deleted_subscription(chat_id: int, row: dict) -> dict | None:
     """Re-inserts a previously deleted subscription row exactly as it was,
-    including its billing_day/active/last_logged_month -- used for one-step
-    'undo' after a natural-language correction deletes the wrong one. Gets a
-    fresh row id, since SQLite won't recycle the old one. Preserving
-    last_logged_month (rather than resetting it to None) matters: undoing an
-    accidental delete made right after this month's auto-post must not make
-    the subscription look un-logged and eligible to double-charge the same
-    cycle on the next tick."""
+    including its frequency/next_renewal_date/card/notes/is_claimable/
+    active/last_logged_date -- used for one-step 'undo' after a natural-
+    language correction deletes the wrong one. Gets a fresh row id, since
+    SQLite won't recycle the old one. Preserving last_logged_date (rather
+    than resetting it to None) matters: undoing an accidental delete made
+    right after a cycle's auto-post must not make the subscription look
+    un-logged and eligible to double-charge the same cycle on the next
+    tick."""
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO subscriptions (chat_id, name, amount, currency, amount_base, category, "
-            "billing_day, active, last_logged_month) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO subscriptions (chat_id, name, amount, currency, amount_base, category, frequency, "
+            "next_renewal_date, card, notes, is_claimable, active, last_logged_date) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (chat_id, row["name"], row["amount"], row["currency"], row["amount_base"], row["category"],
-             row["billing_day"], row.get("active", 1), row.get("last_logged_month")),
+             row["frequency"], row["next_renewal_date"], row.get("card"), row.get("notes"),
+             row.get("is_claimable", 0), row.get("active", 1), row.get("last_logged_date")),
         )
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
     return get_subscription(chat_id, new_id)

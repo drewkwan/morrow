@@ -1,21 +1,24 @@
 """
-Recurring monthly subscriptions (Netflix, gym, etc.) that auto-log
-themselves as a real expense on their billing day every month -- see
-db.py's "subscriptions" section docstring for the full design. This module
-is pure config management (/addsubscription, /subscriptions,
-/removesubscription) plus subscriptions_tick, the daily job that actually
-does the auto-logging. The logged expense itself is an ordinary row in
-`expenses` -- correctable, visible everywhere an expense already is --
-there's nothing subscription-specific left to maintain once a cycle's
-charge has landed.
+Recurring subscriptions (Netflix, gym, insurance, etc.) that auto-log
+THEMSELVES as a real expense on their renewal date -- see db.py's
+"subscriptions" section docstring for the full schema design
+(frequency/next_renewal_date/card/notes/is_claimable, replacing the old
+monthly-only billing_day design). This module is config management
+(/addsubscription, /subscriptions, /removesubscription) plus two daily/
+weekly jobs: subscriptions_tick (auto-logs a cycle's expense on its real
+renewal day) and subscriptions_digest_tick (a separate weekly heads-up of
+what's coming up -- Andrew's explicit choice to keep renewal reminders out
+of the daily morning briefing, see subscriptions_digest_tick's own
+docstring).
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
+import config
 import db
 from access import _reject_if_not_allowed
 from formatting import _money, _subscription_line
@@ -25,59 +28,93 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SUBSCRIPTION_CATEGORY = "Bills & Utilities"
 
+# "What's this subscription really costing per month" -- used only for
+# /subscriptions' summary total, so quarterly/annual/weekly/biweekly
+# subscriptions can be compared on one common footing instead of just
+# listing raw per-cycle amounts (this is part of what Andrew asked for --
+# "useful for future analytics"). 52/12 and 26/12 weeks-per-month rather
+# than a flat x4/x2 -- a year has slightly more than 52/4 weeks, and this
+# keeps the monthly-equivalent total from quietly under-counting weekly/
+# biweekly subscriptions.
+_MONTHLY_MULTIPLIER = {
+    "weekly": 52 / 12,
+    "biweekly": 26 / 12,
+    "monthly": 1,
+    "quarterly": 1 / 3,
+    "annual": 1 / 12,
+}
+
+
+def _next_renewal_date_from_days(renews_in_days, frequency: str) -> str:
+    """Deterministic day-count-to-date conversion -- same discipline as
+    tasks._due_at_from_fields/income._income_date_from_days_ago: the model
+    only ever extracts a day-count (how many days from today this next
+    renews), never a calendar date itself (see ai.py's log_subscription
+    rules). Falls back to "the next occurrence of `frequency` starting from
+    today" (via db.advance_date_by_frequency) when the model couldn't
+    extract a day-count at all -- e.g. "I just signed up for X, it's
+    monthly" with no renewal date mentioned -- a reasonable default rather
+    than refusing to log the subscription."""
+    today = date.fromisoformat(db.today_str())
+    if isinstance(renews_in_days, int) and renews_in_days >= 0:
+        return (today + timedelta(days=renews_in_days)).isoformat()
+    return db.advance_date_by_frequency(today, frequency).isoformat()
+
 
 async def _log_subscriptions_and_reply(update: Update, chat_id: int, items: list):
-    """Entry point for the natural-language 'log_subscription' intent -- can
-    register several subscriptions in ONE message, the real point of this
-    path (see ai.py's log_subscription field docs): registering a whole
-    starter list of recurring charges without a /addsubscription round trip
-    per item (e.g. pasting in every subscription at once rather than typing
-    one command per line). Each item needs a valid billing_day (1-31) to
-    actually land -- an item missing one is skipped rather than guessed at
-    or silently dropped, and reported back by name, so a big pasted list
-    with one bad line doesn't lose the rest of it."""
-    added_lines = []
-    skipped = []
+    """Entry point for the natural-language log_subscription intent --
+    covers both a single "hey I just signed up for X" message and the
+    bulk-paste workflow (Andrew pasting his full list of real subscriptions
+    in one message and having every row inserted in one shot). Same
+    multi-item discipline as _log_tasks_and_reply/income._log_incomes_and_
+    reply. frequency defaults to "monthly" if missing/not one of
+    db.RECURRENCE_FREQUENCIES (mirrors db.add_subscription's own
+    fallback); next_renewal_date is always computed deterministically via
+    _next_renewal_date_from_days, never trusted from the model directly."""
+    lines = []
     for item in items:
-        name = (item.get("name") or "").strip()
-        amount = item.get("amount")
-        billing_day = item.get("billing_day")
-        if not name or amount is None:
-            skipped.append(f"{name or 'unnamed'} (missing name or amount)")
-            continue
-        if not isinstance(billing_day, int) or not (1 <= billing_day <= 31):
-            skipped.append(f"{name} (needs a billing day 1-31)")
-            continue
+        name = item.get("name") or "subscription"
+        amount = float(item["amount"])
+        currency = item.get("currency")
+        frequency = item.get("frequency") if item.get("frequency") in db.RECURRENCE_FREQUENCIES else "monthly"
+        next_renewal_date = _next_renewal_date_from_days(item.get("renews_in_days"), frequency)
         category = item.get("category") or DEFAULT_SUBSCRIPTION_CATEGORY
+        card = item.get("card")
+        notes = item.get("notes")
+        is_claimable = bool(item.get("is_claimable"))
         subscription_id = db.add_subscription(
-            chat_id, name, float(amount), item.get("currency"), billing_day, category=category
+            chat_id, name, amount, currency, frequency, next_renewal_date,
+            category=category, card=card, notes=notes, is_claimable=is_claimable,
         )
         row = db.get_subscription(chat_id, subscription_id)
-        added_lines.append(_subscription_line(row))
+        lines.append(_subscription_line(row))
 
-    parts = []
-    if added_lines:
-        header = "Added subscription:" if len(added_lines) == 1 else f"Added {len(added_lines)} subscriptions:"
-        body = added_lines[0] if len(added_lines) == 1 else "\n".join(f"- {ln}" for ln in added_lines)
-        parts.append(f"{header}\n{body}")
-    if skipped:
-        parts.append("Couldn't add (missing info): " + ", ".join(skipped))
-    if not parts:
-        parts.append("Didn't catch any subscriptions to add -- try naming each one's amount and billing day.")
-    await _reply(update, chat_id, "\n\n".join(parts))
+    header = "Added:" if len(lines) == 1 else f"Added {len(lines)} subscriptions:"
+    body = "\n".join(lines) if len(lines) == 1 else "\n".join(f"- {ln}" for ln in lines)
+    await _reply(update, chat_id, f"{header}\n{body}")
 
 
 async def addsubscription_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/addsubscription <name> <amount> [currency] <billing_day> [category]
+    """/addsubscription <name> <amount> [currency] <frequency> <next_renewal YYYY-MM-DD> [category]
     -- a structured command, not natural language, since this is one-time
-    config (a name, amount, and day of the month) rather than something
-    reported in the moment the way a real expense/meal/workout is."""
+    config (a name, amount, cadence, and renewal date) rather than
+    something reported in the moment the way a real expense/meal/workout
+    is. Deliberately doesn't take card/notes/is_claimable here -- those are
+    secondary detail best set via natural-language correction
+    ("that Anytime Fitness one is claimable") or the bulk NL path
+    (_log_subscriptions_and_reply) instead of a longer, harder-to-type
+    command line. name is a single token (no spaces), same limitation the
+    old billing_day-based version had -- args[0] is the name, args[1] the
+    amount, same simple positional parsing."""
     if await _reject_if_not_allowed(update):
         return
     chat_id = update.effective_chat.id
     args = context.args
-    usage = "Usage: /addsubscription <name> <amount> [currency] <billing_day 1-31> [category]"
-    if len(args) < 3:
+    usage = (
+        "Usage: /addsubscription <name> <amount> [currency] <frequency> <next_renewal YYYY-MM-DD> [category]\n"
+        f"frequency is one of: {', '.join(db.RECURRENCE_FREQUENCIES)}"
+    )
+    if len(args) < 4:
         await update.message.reply_text(usage)
         return
     name = args[0]
@@ -88,46 +125,47 @@ async def addsubscription_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     rest = args[2:]
     currency = None
-    # A currency code is the one 3-letter-looking alpha token among the
-    # remaining args -- the same light heuristic /log already works fine
-    # without, kept deliberately simple here since this command's args are
-    # few and well-ordered (name, amount, [currency], day, [category]).
+    # Same light heuristic as the other /add* commands -- the one
+    # 3-letter-looking alpha token among the remaining args is the currency.
     if rest and rest[0].isalpha() and len(rest[0]) == 3:
         currency = rest[0].upper()
         rest = rest[1:]
     if not rest:
         await update.message.reply_text(usage)
         return
-    try:
-        billing_day = int(rest[0])
-    except ValueError:
-        await update.message.reply_text(f"That doesn't look like a day of the month. {usage}")
+    frequency = rest[0].lower()
+    if frequency not in db.RECURRENCE_FREQUENCIES:
+        await update.message.reply_text(f"Frequency must be one of: {', '.join(db.RECURRENCE_FREQUENCIES)}. {usage}")
         return
-    if not (1 <= billing_day <= 31):
-        await update.message.reply_text("Billing day must be between 1 and 31.")
+    rest = rest[1:]
+    if not rest:
+        await update.message.reply_text(usage)
+        return
+    try:
+        next_renewal_date = date.fromisoformat(rest[0]).isoformat()
+    except ValueError:
+        await update.message.reply_text(f"That doesn't look like a date (want YYYY-MM-DD). {usage}")
         return
     category = " ".join(rest[1:]) or DEFAULT_SUBSCRIPTION_CATEGORY
-    subscription_id = db.add_subscription(chat_id, name, amount, currency, billing_day, category=category)
-    row = db.get_subscription(chat_id, subscription_id)
-    await _reply(
-        update, chat_id,
-        f"Added subscription: {_subscription_line(row)}\nIt'll auto-log as an expense every month on the "
-        f"{billing_day}."
+    subscription_id = db.add_subscription(
+        chat_id, name, amount, currency, frequency, next_renewal_date, category=category,
     )
+    row = db.get_subscription(chat_id, subscription_id)
+    await _reply(update, chat_id, f"Added: {_subscription_line(row)}")
 
 
 async def subscriptions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await _reject_if_not_allowed(update):
         return
     chat_id = update.effective_chat.id
-    rows = db.get_subscriptions(chat_id)
+    rows = db.get_subscriptions(chat_id, active_only=True)
     if not rows:
         await update.message.reply_text("No active subscriptions. Add one with /addsubscription.")
         return
-    total = sum(r["amount_base"] for r in rows)
-    lines = [_subscription_line(r) for r in rows]
+    lines = "\n".join(_subscription_line(r) for r in rows)
+    monthly_total = sum(r["amount_base"] * _MONTHLY_MULTIPLIER.get(r["frequency"], 1) for r in rows)
     await update.message.reply_text(
-        "Subscriptions:\n" + "\n".join(lines) + f"\n\nTotal: {_money(total)}/mo"
+        f"Active subscriptions:\n{lines}\n\n~{_money(monthly_total)}/mo equivalent across all cadences"
     )
 
 
@@ -147,33 +185,76 @@ async def removesubscription_cmd(update: Update, context: ContextTypes.DEFAULT_T
     if row is None:
         await update.message.reply_text("I don't have a subscription with that id -- check /subscriptions.")
         return
-    await update.message.reply_text(f"Removed subscription: {row['name']}. It won't auto-log anymore.")
+    await update.message.reply_text(f"Removed: {_subscription_line(row)}")
 
 
 async def subscriptions_tick(context: ContextTypes.DEFAULT_TYPE):
-    """Runs once a day (see app.py's job_queue registration) and auto-logs
-    an expense for every active subscription whose billing day is today --
-    see db.day_matches_billing_day's docstring for how a billing_day that
-    doesn't exist in every month (e.g. 31) is handled. Idempotent per
-    calendar month via last_logged_month, so a bot restart or a job
-    re-running the same day can never double-charge."""
+    """Runs once a day (see app.py's job_queue registration,
+    config.RECURRING_FINANCE_HOUR/MINUTE) and auto-posts any subscription
+    whose next_renewal_date is today as a real expense -- mirrors
+    income.income_tick exactly, just debiting (db.add_expense) instead of
+    crediting. Idempotency is next_renewal_date itself: db.advance_
+    subscription moves it past today immediately after posting, so a
+    same-day retry (a bot restart, a job re-fire) no longer matches
+    `next_renewal_date == today` on its next pass -- unlike the old
+    last_logged_month guard, this needs no separate "have I already done
+    this cycle" check. is_claimable flows straight through to the posted
+    expense (see db.py's subscriptions section docstring), so a
+    subscription you expense to your employer shows up in /claimed the
+    normal way."""
     today = date.fromisoformat(db.today_str())
-    month_str = today.strftime("%Y-%m")
+    today_str = today.isoformat()
     for chat_id in db.get_all_chat_ids():
         for sub in db.get_subscriptions(chat_id, active_only=True):
-            if sub.get("last_logged_month") == month_str:
-                continue
-            if not db.day_matches_billing_day(today, sub["billing_day"]):
+            if sub["next_renewal_date"] != today_str:
                 continue
             db.add_expense(
-                chat_id, sub["amount"], sub["currency"], sub["name"], sub.get("category"),
-                is_claimable=False,
+                chat_id, sub["amount"], sub["currency"], sub["name"],
+                sub.get("category") or DEFAULT_SUBSCRIPTION_CATEGORY,
+                is_claimable=bool(sub.get("is_claimable")),
             )
-            db.mark_subscription_logged(sub["id"], month_str)
+            new_next_renewal_date = db.advance_date_by_frequency(today, sub["frequency"]).isoformat()
+            db.advance_subscription(sub["id"], today_str, new_next_renewal_date)
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"Auto-logged subscription: {_money(sub['amount'], sub['currency'])} -- {sub['name']}",
+                    text=(
+                        f"Auto-posted subscription: {_money(sub['amount'], sub['currency'])} -- {sub['name']} "
+                        f"(next renewal {new_next_renewal_date})"
+                    ),
                 )
             except Exception:
-                logger.exception("Failed to notify chat %s of auto-logged subscription", chat_id)
+                logger.exception("Failed to notify chat %s of auto-posted subscription", chat_id)
+
+
+async def subscriptions_digest_tick(context: ContextTypes.DEFAULT_TYPE):
+    """Runs weekly (see app.py's job_queue registration, config.
+    SUBSCRIPTION_DIGEST_* constants) and sends a standalone heads-up of
+    subscriptions renewing within the next
+    config.SUBSCRIPTION_DIGEST_LOOKAHEAD_DAYS days. Kept deliberately
+    SEPARATE from the daily morning briefing -- Andrew's explicit choice
+    (AskUserQuestion: "Separate weekly digest"), since a renewal heads-up
+    read every single day would be noise, but is exactly the right cadence
+    once a week. Purely informational -- doesn't touch next_renewal_date or
+    last_logged_date; subscriptions_tick (above) is what actually
+    auto-posts/advances a cycle on its real renewal day, independent of
+    whether this digest ever ran. A chat with nothing renewing in the
+    window gets no message at all, rather than a "nothing's due" ping
+    every single week."""
+    today = date.fromisoformat(db.today_str())
+    window_end = today + timedelta(days=config.SUBSCRIPTION_DIGEST_LOOKAHEAD_DAYS)
+    for chat_id in db.get_all_chat_ids():
+        upcoming = [
+            sub for sub in db.get_subscriptions(chat_id, active_only=True)
+            if today <= date.fromisoformat(sub["next_renewal_date"]) <= window_end
+        ]
+        if not upcoming:
+            continue
+        body = "\n".join(_subscription_line(sub) for sub in upcoming)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Renewing in the next {config.SUBSCRIPTION_DIGEST_LOOKAHEAD_DAYS} days:\n{body}",
+            )
+        except Exception:
+            logger.exception("Failed to send subscriptions digest to chat %s", chat_id)

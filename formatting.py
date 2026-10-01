@@ -104,8 +104,9 @@ def _vitals_line(row: dict) -> str:
 def _task_line(row: dict) -> str:
     due = f" (due {row['due_at']})" if row.get("due_at") else ""
     done_tag = " [done]" if row.get("done") else ""
+    recurrence_tag = f" [repeats {row['recurrence_frequency']}]" if row.get("recurrence_frequency") else ""
     notes = f" -- {row['notes']}" if row.get("notes") else ""
-    return f"#{row['id']} {row['title']}{due}{notes}{done_tag}"
+    return f"#{row['id']} {row['title']}{due}{recurrence_tag}{notes}{done_tag}"
 
 
 def _reminder_line(row: dict) -> str:
@@ -121,10 +122,23 @@ def _event_line(row: dict) -> str:
     return f"#{row['id']} {row['title']} (scheduled {when}){notes}"
 
 
+# How each recurrence frequency reads inline -- "/mo"-style for the fixed-
+# interval ones, "every N ..." for the rest, so a line reads naturally
+# regardless of cadence (e.g. "$37.98 every 3 months" not "$37.98 /quarterly").
+_FREQUENCY_LABELS = {
+    "weekly": "/wk", "biweekly": "every 2 weeks", "monthly": "/mo",
+    "quarterly": "every 3 months", "annual": "/yr",
+}
+
+
 def _subscription_line(row: dict) -> str:
     category_tag = f" [{row['category']}]" if row.get("category") else ""
-    return (f"#{row['id']} {row['name']} -- {_money(row['amount'], row.get('currency'))}/mo "
-            f"on the {row['billing_day']}{category_tag}")
+    card_tag = f" on {row['card']}" if row.get("card") else ""
+    claim_tag = " [claimable]" if row.get("is_claimable") else ""
+    notes_tag = f" -- {row['notes']}" if row.get("notes") else ""
+    freq_label = _FREQUENCY_LABELS.get(row.get("frequency"), f" ({row.get('frequency')})")
+    return (f"#{row['id']} {row['name']} -- {_money(row['amount'], row.get('currency'))} {freq_label} "
+            f"(renews {row['next_renewal_date']}){category_tag}{card_tag}{claim_tag}{notes_tag}")
 
 
 def _income_line(row: dict) -> str:

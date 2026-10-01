@@ -147,8 +147,9 @@ COMMAND_LIST = (
     "/events (show what's coming up), "
     "/rescheduleevent <id> <days from today> (move an event to a new day), "
     "/removeevent <id> (remove a scheduled event), "
-    "/addsubscription <name> <amount> [currency] <billing day 1-31> [category] (a recurring monthly charge "
-    "that auto-logs itself as an expense every month), /subscriptions (list active subscriptions), "
+    "/addsubscription <name> <amount> [currency] <frequency: weekly|biweekly|monthly|quarterly|annual> "
+    "<next renewal YYYY-MM-DD> [category] (a recurring charge that auto-logs itself as an expense on its "
+    "renewal date), /subscriptions (list active subscriptions + a combined monthly-equivalent total), "
     "/removesubscription <id> (stop a subscription auto-logging), "
     "/setincome <gross amount> [currency] <pay day 1-31> [cpf rate%] [stock rate%] (set up recurring salary "
     "that auto-posts on payday), /incomeconfig (view the current recurring salary setup), "
@@ -248,10 +249,22 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     one, and however many distinct recurring charges are named in the message -- a pasted-in list of several
     subscriptions at once (e.g. registering a whole starter list in one message) means one object per
     subscription, not one merged entry] each shaped: {{"name": short string (e.g. "Netflix", "Gym membership"),
-    "amount": number, "currency": one of the currency list or null if not mentioned, "billing_day": integer
-    1-31 -- which day of the month it bills, REQUIRED for each item (if genuinely not stated for one item in an
-    otherwise-clear bulk list, still include the object with billing_day null rather than dropping it -- the
-    code will ask), "category": one of the category list or null if unclear}},
+    "amount": number, "currency": one of the currency list or null if not mentioned,
+    "frequency": "weekly" | "biweekly" | "monthly" | "quarterly" | "annual" (how often it bills -- default to
+    "monthly" if genuinely not stated, since that's by far the most common cadence),
+    "renews_in_days": integer or null -- the NEXT renewal date, as a plain count of days from today (0 = renews
+    today, 1 = tomorrow, etc.). Extract WHICH day the same way due_in_days works for tasks: for an explicit
+    date/weekday ("renews on the 25th", "next charge is Oct 13"), compute this against "Today's actual date"
+    given at the top of this message; never compute or output an actual calendar date yourself, that's done in
+    code. null if genuinely not stated -- the code falls back to a sensible default rather than asking, so
+    don't block the whole item on this one field,
+    "category": one of the category list or null if unclear,
+    "card": short string or null (which card/account it bills to, e.g. "Citibank", "OCBC" -- ONLY if actually
+    mentioned),
+    "notes": string or null (any other detail worth keeping, e.g. "contract ends August 2028", "need a
+    reminder for this one" -- ONLY if actually mentioned),
+    "is_claimable": true or null (set true ONLY when the message says this should be claimed back, e.g. from an
+    employer -- "I should claim this from my company"; null/omit otherwise, never guess true)}},
 
   "meals": [list of one or more objects, log_meal only -- ALWAYS a list, even for a single meal]
     each shaped: {{"meal_type": one of the meal type list, or null, "items": [list of individual food/drink
@@ -335,7 +348,13 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     calendar date yourself, that's done in code),
     "due_time": "HH:MM" 24-hour time or null (ONLY if a specific clock time was mentioned alongside this item's
     date, e.g. "by 5pm friday" -> "17:00"), "notes": string or null (any extra detail worth keeping beyond the
-    title)}},
+    title), "recurrence": "weekly" | "biweekly" | "monthly" | "quarterly" | "annual" | null (ONLY set when the
+    to-do itself is explicitly a REPEATING obligation, not a one-off -- e.g. "remind me to claim my gym
+    membership every month", "add a task to pay the insurance annually", "I need to review this quarterly".
+    null means a plain one-off to-do, checked off once and done for good -- the default, and correct for the
+    vast majority of to-dos. Don't confuse this with "add_reminder" (a DAILY-only habit with no due date at
+    all, see that intent's own rules below) -- "recurrence" here is for a to-do that still has a real due date
+    each cycle, just at a cadence other than daily)}},
 
   "target_domain": "expense" | "meal" | "workout" | "lift" | "vitals" | "task" | "event" | "balance" | "subscription" | "income" | "deduction" | "income_config" or null (correction
     only -- which recent-<domain> list target_expense_id refers to; null means "expense", for backward
@@ -373,6 +392,15 @@ Respond with ONLY a JSON object, no other text, matching this shape:
   "new_task_notes": string or null (correction + edit_task only, target_domain="task" -- ONLY set if the
     message actually adds/changes a note on the to-do, e.g. "I need Shardul's address for that" alongside a
     reschedule),
+  "new_task_recurrence": "weekly" | "biweekly" | "monthly" | "quarterly" | "annual" or null (correction +
+    edit_task only -- set ONLY when the message explicitly makes/keeps the to-do a REPEATING one at this
+    cadence, e.g. "actually remind me about this every month, not just once". Same three-state shape as
+    due_in_days/remove_due_date: this sets a new cadence, remove_recurrence clears it back to one-off, and
+    leaving both null means recurrence isn't what's being touched),
+  "remove_recurrence": true or null (correction + edit_task only, target_domain="task" -- set true ONLY when
+    the message asks to STOP this to-do from repeating, keeping it as a normal one-off to-do instead, e.g.
+    "stop reminding me about this every month", "just make that a one-time thing now". Never set both
+    new_task_recurrence and remove_recurrence on the same correction -- that's a contradiction),
   "new_meal_items": [list of strings] or null (correction + edit_meal only, target_domain="meal" -- the FULL
     corrected item list for the meal, not just what changed -- e.g. removing one wrong item still means
     re-listing every item that's actually still correct, plus the removal reflected by its absence),
@@ -433,10 +461,22 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     actually corrects the price),
   "new_subscription_currency": one of the currency list or null (correction + edit_subscription only -- ONLY
     set if the message actually changes the currency),
-  "new_subscription_billing_day": integer 1-31 or null (correction + edit_subscription only -- ONLY set if the
-    message actually moves the billing day),
+  "new_subscription_frequency": "weekly" | "biweekly" | "monthly" | "quarterly" | "annual" or null (correction
+    + edit_subscription only -- ONLY set if the message actually changes how often it bills, e.g. "actually
+    that one's billed quarterly, not monthly"),
+  "new_subscription_renews_in_days": integer or null (correction + edit_subscription only -- a NEW next-renewal
+    date, as a plain count of days from today, same discipline as edit_task's due_in_days -- ONLY set if the
+    message actually moves the renewal date; never compute or output an actual calendar date yourself),
   "new_subscription_category": one of the category list or null (correction + edit_subscription only -- ONLY
     set if the message actually changes the category),
+  "new_subscription_card": string or null (correction + edit_subscription only -- ONLY set if the message
+    actually changes which card/account it bills to),
+  "new_subscription_notes": string or null (correction + edit_subscription only -- ONLY set if the message
+    actually adds/changes a note),
+  "new_subscription_is_claimable": true or false or null (correction + edit_subscription only -- ONLY set
+    (true or false) if the message actually says whether it should/shouldn't be claimed back, e.g. "I should
+    actually claim this from my company" -> true, "no need to claim that one after all" -> false; null if
+    claimable status isn't what's being touched by this correction),
   "new_income_source": "salary" | "bonus" | "other" or null (correction + edit_income only,
     target_domain="income" -- ONLY set if the message actually changes what kind of income it was),
   "new_income_description": string or null (correction + edit_income only -- ONLY set if the message actually
@@ -527,17 +567,22 @@ Deciding the intent:
   parking", "$20 for parking fines" -- these are still "log_expense", not this), prefer "log_expense" --
   "log_deduction" is specifically for tax/statutory/account-level deductions, not purchases, however
   unpleasant the purchase felt.
-- "log_subscription": the message is registering one or more NEW recurring monthly charges to auto-log
-  themselves going forward -- "I pay $15.98 for Netflix on the 25th", "add my gym membership, $80 a month on
-  the 1st", or a pasted-in bulk list of several at once ("Netflix 15.98 the 25th, Spotify 11.98 the 1st, gym 80
-  the 1st"). Put EVERY distinct subscription mentioned as its own object in "subscriptions", even when there's
-  only one -- the whole point of this intent is to let a long list be registered in a single message instead of
-  one command per subscription. This is distinct from "log_expense": a subscription here is CONFIG for a charge
-  that bills itself every month going forward, not a one-off purchase that already happened (a message like "I
-  paid for Netflix" with no sense of "set this up to recur" is "log_expense", not this). It's also distinct from
-  "log_income"/"log_deduction" -- those are money arriving/leaving the account, this is money that will leave on
-  a recurring schedule. If a billing day genuinely can't be determined for an otherwise-clear subscription, still
-  include the object (billing_day null) rather than dropping it -- the code will ask for just that one field.
+- "log_subscription": the message is registering one or more NEW recurring charges to auto-log themselves going
+  forward -- "I pay $15.98 for Netflix on the 25th", "add my gym membership, $80 a month on the 1st", "HBO Max
+  is $37.98 every 3 months, renews Jan 1", or a pasted-in bulk list of several at once, any mix of cadences
+  (weekly/biweekly/monthly/quarterly/annual) in one message -- e.g. Andrew's real workflow is pasting his whole
+  subscriptions list (name/amount/renewal date/frequency/category/card/notes all in one message) and expecting
+  every row to become its own object. Put EVERY distinct subscription mentioned as its own object in
+  "subscriptions", even when there's only one -- the whole point of this intent is to let a long list be
+  registered in a single message instead of one command per subscription, and a big pasted list must produce
+  one object per row, never merged or truncated partway through. This is distinct from "log_expense": a
+  subscription here is CONFIG for a charge that bills itself on a recurring schedule going forward, not a
+  one-off purchase that already happened (a message like "I paid for Netflix" with no sense of "set this up to
+  recur" is "log_expense", not this). It's also distinct from "log_income"/"log_deduction" -- those are money
+  arriving/leaving the account, this is money that will leave on a recurring schedule. If the renewal date
+  genuinely can't be determined for an otherwise-clear subscription, still include the object
+  (renews_in_days null) rather than dropping it -- the code falls back to a sensible default instead of
+  blocking the whole item on it.
 - "log_meal": the message is reporting food or drink just consumed (e.g. "coke zero and 750ml water", "had a
   mango", "dinner was rice, chicken and veg", "for breakfast: toast and coffee. For lunch: noodles and a latte"
   -- two separate meals in one message). Put EVERY distinct meal mentioned as its own object in "meals", even
@@ -597,9 +642,13 @@ Deciding the intent:
   each with its own title (and its own due date/time if one was given for that specific item), not one generic
   entry. Extract each title as a short, actionable phrase (not a full sentence), due_in_days/due_time only if a
   due date/time was actually mentioned for that item (never invent one), and notes for any extra detail worth
-  keeping. This is distinct from "remember" (a standing durable FACT/goal/preference with no deadline, nothing
-  to check off) and from "add_reminder" below (a habit that recurs EVERY day, not a one-off item, and never has
-  a due date) -- log_task is only for a concrete, one-off thing to be done once and then checked off for good.
+  keeping. Most to-dos are one-off -- leave "recurrence" null. Only set it when the to-do is explicitly a
+  REPEATING obligation at some cadence other than daily (e.g. "add a task to claim my gym membership every
+  month", "remind me to review this quarterly") -- see the "tasks" field shape above for the exact values and
+  the distinction from "add_reminder"'s daily-only habits. This is distinct from "remember" (a standing durable
+  FACT/goal/preference with no deadline, nothing to check off) and from "add_reminder" below (a habit that
+  recurs EVERY day, not a one-off item, and never has a due date) -- log_task (recurring or not) is always a
+  concrete thing with a title to be checked off each cycle, not a durable fact or a daily-only habit.
 - "add_reminder": the message is asking to be reminded of the SAME thing EVERY DAY, indefinitely -- a recurring
   daily habit, not a one-off action with a deadline (e.g. "remind me every day to take my hair pills", "I need
   to take my vitamins daily, remind me", "add a daily reminder to stretch before bed"). The giveaway is
@@ -706,12 +755,16 @@ Deciding the intent:
   calories correction -- see below), and "delete" are supported; for "workout" targets, "edit_date",
   "edit_workout" (a flexible activity/duration/distance/calories-burned/notes correction -- see below), and
   "delete" are supported; for "lift" targets, "edit_date", "edit_lift" (a flexible sets/location/effort/notes
-  correction -- see below), and "delete" are supported; for "task" targets, "mark_done", "edit_task" (a
-  flexible title/due-date/notes edit -- see below), and "delete" are supported; for "event" targets,
+  correction -- see below), and "delete" are supported; for "task" targets, "mark_done" (for a RECURRING task,
+  this means "done for this cycle" -- it resurfaces with its next due date rather than closing for good, see
+  db.mark_task_done), "edit_task" (a flexible title/due-date/notes/recurrence edit -- see below), and "delete"
+  are supported; for "event" targets,
   "reschedule" (move it to a new day -- see target_domain="event"'s own paragraph below) and "delete" are
-  supported; for "subscription" targets, "edit_subscription" (a flexible name/amount/currency/billing-day/
-  category correction -- see below) and "delete" are supported (no "edit_date" -- a subscription has no logged
-  date, just a billing_day, which is part of edit_subscription); for "income" and "deduction" targets,
+  supported; for "subscription" targets, "edit_subscription" (a flexible name/amount/currency/frequency/
+  renewal-date/category/card/notes/claimable-status correction -- see below) and "delete" are supported (no
+  "edit_date" -- a subscription's one date-shaped field, next_renewal_date, is always forward-looking and is
+  part of edit_subscription, not a backward-looking "when did this happen" correction); for "income" and
+  "deduction" targets,
   "edit_date", their own flexible "edit_income"/"edit_deduction" correction (see below), and "delete" are
   supported.
 
@@ -755,18 +808,21 @@ Deciding the intent:
   "clarification" rather than guessing (this mirrors an existing real interaction: "adjust my rolled-over
   balance" without a specific number needs the amount, not a guess).
   correction_action="edit_task" (target_domain="task" only) is a SINGLE flexible action covering an existing
-  to-do's title, due date, and notes -- set whichever of new_description (the title), due_in_days/due_time (a
-  NEW due date), remove_due_date (CLEARING the due date instead), and new_task_notes (a note) the message
-  actually implies changing, in any combination, and leave the rest null. Examples: "push #11 to tomorrow" sets
-  only due_in_days; "actually it's calling the vet, not the dentist" sets only new_description; "push #11 to
-  tomorrow, I need Shardul's address" sets BOTH due_in_days AND new_task_notes in the same correction -- don't
-  split an obviously-compound edit like that into two separate turns, or silently drop the note just because
-  the due date was the more obvious change; "take the due date off #22, keep it open, I'll do it later" sets
-  ONLY remove_due_date=true -- do NOT invent a due_in_days for this (there's no new date to compute), and do
-  NOT use "delete" (the to-do itself isn't going away, just its date). A due date here is deliberately
+  to-do's title, due date, notes, and recurrence -- set whichever of new_description (the title), due_in_days/
+  due_time (a NEW due date), remove_due_date (CLEARING the due date instead), new_task_notes (a note),
+  new_task_recurrence (making/keeping it a REPEATING to-do at a cadence), and remove_recurrence (making it a
+  plain one-off again) the message actually implies changing, in any combination, and leave the rest null.
+  Examples: "push #11 to tomorrow" sets only due_in_days; "actually it's calling the vet, not the dentist" sets
+  only new_description; "push #11 to tomorrow, I need Shardul's address" sets BOTH due_in_days AND
+  new_task_notes in the same correction -- don't split an obviously-compound edit like that into two separate
+  turns, or silently drop the note just because the due date was the more obvious change; "take the due date
+  off #22, keep it open, I'll do it later" sets ONLY remove_due_date=true -- do NOT invent a due_in_days for
+  this (there's no new date to compute), and do NOT use "delete" (the to-do itself isn't going away, just its
+  date); "actually make that a monthly thing, not just once" sets ONLY new_task_recurrence="monthly"; "stop
+  reminding me about that every month" sets ONLY remove_recurrence=true. A due date here is deliberately
   forward-looking, unlike edit_date's backward-only days_ago (which can't express "in 3 days") --
   due_in_days/due_time are the SAME forward day-count fields log_task uses for a brand-new to-do, just applied
-  to an existing one. At least one of the four fields must actually be changing; if the message is about a
+  to an existing one. At least one of the six fields must actually be changing; if the message is about a
   to-do but it's unclear WHAT should change, use "clarification" and ask.
   correction_action="edit_meal" (target_domain="meal" only) corrects what was actually eaten/drunk in an
   already-logged meal, WITHOUT deleting and relogging it from scratch -- the case this exists for is a photo- or
@@ -812,12 +868,15 @@ Deciding the intent:
   message correcting just the weight sets ONLY new_vitals_weight_kg, not the others. If the message is about
   a check-in but it's unclear what actually changed, use "clarification" and ask what to fix.
   correction_action="edit_subscription" (target_domain="subscription" only) corrects the subscription's own
-  CONFIG -- a price change, a billing-day move, a rename, a category change -- in place, WITHOUT touching any
-  month that's already auto-posted as a real expense (that's a normal "expense" correction instead, if needed).
-  Examples: "Netflix went up to $17.98" (new_subscription_amount), "move my gym billing to the 5th"
-  (new_subscription_billing_day), "rename that to Netflix Premium" (new_subscription_name). Set ONLY the
-  field(s) the message actually changes; leave the rest null. If the message is about a subscription but it's
-  unclear what actually changed, use "clarification" and ask what to fix.
+  CONFIG -- a price change, a cadence change, a renewal-date move, a rename, a category/card/notes/claimable
+  change -- in place, WITHOUT touching any cycle that's already auto-posted as a real expense (that's a normal
+  "expense" correction instead, if needed). Examples: "Netflix went up to $17.98" (new_subscription_amount),
+  "move my gym renewal to the 5th" (new_subscription_renews_in_days), "actually that one's billed quarterly"
+  (new_subscription_frequency), "rename that to Netflix Premium" (new_subscription_name), "that's on my OCBC
+  card now" (new_subscription_card), "I should actually claim that one from my company"
+  (new_subscription_is_claimable=true). Set ONLY the field(s) the message actually changes; leave the rest
+  null. If the message is about a subscription but it's unclear what actually changed, use "clarification" and
+  ask what to fix.
   correction_action="edit_income" (target_domain="income" only) corrects an already-logged income entry's
   source/description/amount/currency in place. Examples: "that bonus was actually $600, not $500"
   (new_income_amount), "that should be tagged as a bonus, not salary" (new_income_source). new_income_amount is
@@ -933,6 +992,15 @@ Deciding the intent:
   bench progressed") or otherwise doesn't map to one of the six covered metrics, use "casual" instead --
   lift-by-lift progression isn't covered by trend yet. If it's genuinely asking for everything across domains
   recently (not one metric, not a real range) that's still "rundown".
+  CRITICAL: a plain TOTAL/SUM question is NOT "trend", even when it's about spending -- e.g. "what's my total
+  monthly expenditure", "how much have I spent this month", "what's my total spend so far this month" are
+  "casual", not "trend". The giveaway is "total"/"how much (in total)"/a flat figure for a period, as opposed
+  to "trend"'s actual subject -- a trajectory, change, or pattern over time (first/last/min/max/change, which
+  is the wrong SHAPE of answer to "what's my total"). "casual" is the right intent for a total because
+  today_snapshot's "month_to_date" field (see its own paragraph below) already carries the real calendar-
+  month-to-date sum -- a genuine number to restate, not something "trend"'s day-by-day series would even
+  answer correctly. Contrast: "how has my spending trended since August" (trajectory -> "trend") vs. "what's
+  my total spend this month" (one flat number -> "casual").
 - "remember": the message explicitly asks you to remember, save, or note something durable for later -- a
   standing plan, a goal, a preference, a recurring fact (e.g. "remember I go to Fitness First Bugis Tue/Thu for
   legs and back", "my goal is 75kg by December", "remember I'm allergic to shellfish", "note that I prefer
@@ -1082,6 +1150,10 @@ Rules for log_task fields (apply per item in "tasks"):
   mentioned for that item; never invent one.
 - due_time is only set if a specific clock time was mentioned alongside that item's date (e.g. "by 5pm friday"
   -> "17:00"); leave it null otherwise, even if a due date was given.
+- recurrence is null for the vast majority of to-dos (a plain one-off). Only set it when the message explicitly
+  frames the to-do as repeating at some cadence (weekly/biweekly/monthly/quarterly/annual) -- never guess a
+  cadence that wasn't actually said, and never use it for a daily habit (that's "add_reminder" instead, a
+  completely separate intent).
 - A numbered or bulleted list of to-dos in one message (e.g. 13 lines, one to-do per line) must become 13
   objects in "tasks" -- one per line -- never collapsed into a single item or truncated partway through the
   list. Each line's own wording (a name, a timeframe like "tonight"/"this week") stays with that line's object
@@ -1121,9 +1193,10 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
     last ~8 for this chat. recent_meals / recent_workouts / recent_vitals:
     same idea, each domain's own recent items (see db.get_recent_meals /
     get_recent_workouts / get_recent_vitals). recent_tasks: list of
-    {id, title, due_at} dicts for open (not-done) to-dos (see
-    db.get_open_tasks) -- what a task correction (mark_done/delete) may
-    target. recent_messages: list of {role, content} dicts, oldest first
+    {id, title, due_at, recurrence_frequency} dicts for open (not-done)
+    to-dos (see db.get_open_tasks) -- what a task correction
+    (mark_done/edit_task/delete) may target. recent_messages: list of
+    {role, content} dicts, oldest first
     (see db.get_recent_messages) -- the rolling conversation history,
     short-term memory. memory_list: list of {label, category, content}
     dicts (see db.get_memory_list) -- durable facts/goals/plans, read in
@@ -1144,9 +1217,10 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
     most recent first (see db.get_recent_lifts) -- what a lift correction
     (edit_date/delete) may target; also appended as the LAST parameter, same
     reasoning as recent_events above.
-    recent_subscriptions: list of {id, name, amount, currency, billing_day,
-    category} dicts (see db.get_subscriptions) -- what a subscription
-    correction (edit_subscription/delete) may target. recent_income: list of
+    recent_subscriptions: list of {id, name, amount, currency, frequency,
+    next_renewal_date, category, card, notes, is_claimable} dicts (see
+    db.get_subscriptions) -- what a subscription correction
+    (edit_subscription/delete) may target. recent_income: list of
     {id, source, description, net_amount, currency, income_date} dicts, most
     recent first (see db.get_recent_income) -- what an income correction
     (edit_date/edit_income/delete) may target. recent_deductions: same idea
@@ -1580,19 +1654,23 @@ TASK_EXTRACT_SYSTEM_PROMPT = """You extract a to-do/reminder from a short descri
 JSON object: {"title": short actionable phrase capturing what needs doing, "due_in_days": integer count of \
 days from today (0 = today, 1 = tomorrow, 2 = day after, etc.) or null if no due date was mentioned, \
 "due_time": "HH:MM" 24-hour time ONLY if a specific clock time was mentioned alongside the date (e.g. "by 5pm \
-friday" -> "17:00"), else null, "notes": a short string capturing anything else worth keeping, or null}. Never \
-invent a due date or time that wasn't mentioned. The message you're given starts with "Today's actual date is \
-..." -- use it to compute due_in_days for an explicit calendar date or weekday ("due the 25th", "by next \
-Wednesday"), not just a relative phrase like "tomorrow"; never guess or leave it null just because the date \
-was named explicitly rather than said relatively."""
+friday" -> "17:00"), else null, "notes": a short string capturing anything else worth keeping, or null, \
+"recurrence": one of "weekly", "biweekly", "monthly", "quarterly", "annual", or null -- set ONLY when the \
+to-do is explicitly a REPEATING obligation at that cadence (e.g. "claim my gym membership every month"); null \
+for the ordinary one-off to-do, which is most of them, and never for a daily habit (that's a different \
+feature entirely)}. Never invent a due date, time, or recurrence that wasn't mentioned. The message you're \
+given starts with "Today's actual date is ..." -- use it to compute due_in_days for an explicit calendar date \
+or weekday ("due the 25th", "by next Wednesday"), not just a relative phrase like "tomorrow"; never guess or \
+leave it null just because the date was named explicitly rather than said relatively."""
 
 
 def extract_task(description: str) -> dict:
     """Used by /addtask for a known description -- same division of labor as
     extract_workout/extract_vitals. Never raises -- falls back to the raw
-    text as the title with no due date, rather than blocking the add if the
-    Claude call fails."""
-    fallback = {"title": description or "to-do", "due_in_days": None, "due_time": None, "notes": None}
+    text as the title with no due date/recurrence, rather than blocking the
+    add if the Claude call fails."""
+    fallback = {"title": description or "to-do", "due_in_days": None, "due_time": None, "notes": None,
+                "recurrence": None}
     try:
         client = _get_client()
         resp = client.messages.create(
@@ -1900,13 +1978,17 @@ gym's plan), use that content directly instead of asking the user to repeat it. 
 durable facts -- never invent a plan or preference that isn't actually in this list.
 - A "today_snapshot": real, deterministically-computed numbers for right now -- today's spending balance/ \
 target/streak, today's meals/workouts/vitals so far (counts, actual items, calorie totals, net calories, \
-the latest weight/sleep/knee-pain reading if logged today), and "net_worth" (total income minus deductions \
+the latest weight/sleep/knee-pain reading if logged today), "net_worth" (total income minus deductions \
 minus all-time non-claimable spend -- see db.get_net_worth; a genuinely DIFFERENT number from the daily \
-balance/target above, since that's a discretionary-spending-allowance rollover, not a real money total). \
-This is here so you can actually converse with real knowledge of how today's going ("you're already over \
-target today, but barely" or "nothing logged yet today, quiet one so far") instead of talking in a vacuum, \
-and so a genuine "what's my net worth" / "how much money do I actually have saved up" question gets answered \
-from net_worth's real figures instead of guessed at -- use whichever part is actually relevant to what they \
+balance/target above, since that's a discretionary-spending-allowance rollover, not a real money total), and \
+"month_to_date" ({{"total": number, "days_elapsed": integer, "month_start": date}} -- real non-claimable \
+spend summed from the 1st of the CURRENT calendar month through today, see db.get_month_to_date_total; this \
+is what answers a plain TOTAL/SUM question like "what's my total spend this month" or "how much have I spent \
+this month" -- a flat number for the month so far, NOT a day-by-day trajectory). This is here so you can \
+actually converse with real knowledge of how today's going ("you're already over target today, but barely" \
+or "nothing logged yet today, quiet one so far") instead of talking in a vacuum, and so a genuine "what's my \
+net worth" / "how much money do I actually have saved up" / "what's my total spend this month" question gets \
+answered from real figures instead of guessed at -- use whichever part is actually relevant to what they \
 said, don't force it into every reply. Every number in it is already correct and final; restate it, never \
 recompute, re-estimate, or "correct" it.
 - "recent_lifts": real logged gym-exercise rows (exercise, location, sets, effort, context_notes, lift_date), \
@@ -1966,7 +2048,9 @@ def answer_casually(message: str, recent_messages: list | None = None, memory_li
     fast structured extraction doesn't need one.
 
     today_snapshot: {{"balance": <db.get_status(chat_id) dict>, "today":
-    <rundown._day_stats_payload(chat_id, today) dict>}} -- real numbers,
+    <rundown._day_stats_payload(chat_id, today) dict>, "net_worth":
+    <db.get_net_worth(chat_id) dict>, "month_to_date":
+    <db.get_month_to_date_total(chat_id) dict>}} -- real numbers,
     never estimated, same discipline as every other narration call here.
     recent_lifts (see lifts._recent_lifts_for_narration): real logged
     gym-exercise rows, most recent first -- what grounds a gym-routine

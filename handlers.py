@@ -91,8 +91,13 @@ async def _casual_reply_text(chat_id: int, message: str, recent_messages: list, 
     reuses the exact same real, deterministically-computed figures day_stats
     already trusts (db.get_status + rundown._day_stats_payload for today),
     plus db.get_net_worth (a genuinely separate "real money" total, not the
-    daily spending target/balance) -- one source of "how's today going"/
-    "what's my net worth", not a second copy that could drift.
+    daily spending target/balance) and db.get_month_to_date_total (the same
+    real calendar-month sum /summary's "month" view uses) -- one source of
+    "how's today going"/"what's my net worth"/"what's my total spend this
+    month", not a second copy of any of those that could drift. See
+    PARSE_SYSTEM_PROMPT's "trend" paragraph for why a plain total/sum
+    question is classified "casual" (grounded here) rather than "trend"
+    (a trajectory/first-last-min-max answer, the wrong shape for a total).
     recent_lifts (lifts._recent_lifts_for_narration) similarly grounds any
     gym-routine question in real logged rows instead of letting the model
     freely narrate from memory prose -- see ai.answer_casually's docstring
@@ -104,6 +109,7 @@ async def _casual_reply_text(chat_id: int, message: str, recent_messages: list, 
         "balance": db.get_status(chat_id),
         "today": _day_stats_payload(chat_id, db.today_str()),
         "net_worth": db.get_net_worth(chat_id),
+        "month_to_date": db.get_month_to_date_total(chat_id),
     }
     recent_lifts = _recent_lifts_for_narration(chat_id)
     try:
@@ -128,13 +134,16 @@ def _recent_events_for_ai(chat_id: int) -> list:
 
 
 def _recent_subscriptions_for_ai(chat_id: int) -> list:
-    """Active subscriptions, billing-day order -- what a subscription
-    correction (edit_subscription/delete) may target. No date field here
-    (unlike the other recent-* lists) -- a subscription's one date-shaped
-    field is billing_day, already included below."""
+    """Active subscriptions, soonest-renewal order (see db.get_subscriptions)
+    -- what a subscription correction (edit_subscription/delete) may
+    target. next_renewal_date is this domain's one date-shaped field,
+    already included below -- there's no separate recent-by-date list the
+    way logged domains have."""
     rows = db.get_subscriptions(chat_id)
     return [{"id": r["id"], "name": r["name"], "amount": r["amount"], "currency": r["currency"],
-             "billing_day": r["billing_day"], "category": r["category"]} for r in rows]
+             "frequency": r["frequency"], "next_renewal_date": r["next_renewal_date"],
+             "category": r["category"], "card": r["card"], "notes": r["notes"],
+             "is_claimable": r["is_claimable"]} for r in rows]
 
 
 def _recent_income_for_ai(chat_id: int) -> list:
@@ -396,11 +405,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "log_subscription":
         context.chat_data.pop(PENDING_KEY, None)
         subscription_items = parsed.get("subscriptions") or []
-        # Unlike income/deduction, a missing amount isn't the only thing
-        # worth rejecting up front -- a missing name is just as unusable --
-        # but billing_day validation happens inside _log_subscriptions_and_
-        # reply itself (per item, so one bad line in a bulk paste doesn't
-        # sink the whole batch).
+        # Only amount is rejected up front -- a missing/unclear frequency or
+        # renewal date no longer sinks an item (see
+        # subscriptions._next_renewal_date_from_days's fallback), so a bad
+        # line in a bulk paste no longer needs its own per-item skip the way
+        # the old billing_day-required design did.
         subscription_items = [it for it in subscription_items if it.get("amount") is not None]
         if not subscription_items:
             await _reply(

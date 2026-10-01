@@ -594,3 +594,86 @@ def test_answer_with_day_stats_uses_the_narration_model(monkeypatch):
     ai.answer_with_day_stats({"day": db.today_str(), "is_today": True, "meals": {"count": 0},
                                "workouts": {"count": 0}, "net_calories": None, "vitals": None})
     assert fake.calls[0]["model"] == "narration-model-x"
+
+
+# ---------- subscriptions: frequency/renewal-date schema (not billing_day) ----------
+# Regression guards for the Round 3 schema redesign -- Andrew's real
+# subscriptions list included quarterly/annual/biweekly items the old
+# monthly-only billing_day design couldn't represent at all (see db.py's
+# "subscriptions" section docstring), plus card/notes/is_claimable detail
+# he explicitly asked to track for future analytics.
+
+def test_parse_system_prompt_log_subscription_uses_frequency_not_billing_day():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "billing_day" not in prompt
+    assert '"renews_in_days"' in prompt
+    assert '"frequency": "weekly" | "biweekly" | "monthly" | "quarterly" | "annual"' in prompt
+
+
+def test_parse_system_prompt_log_subscription_covers_card_notes_claimable():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert '"card": short string or null' in prompt
+    assert '"is_claimable": true or null' in prompt
+
+
+def test_parse_system_prompt_edit_subscription_uses_new_schema_fields():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "new_subscription_frequency" in prompt
+    assert "new_subscription_renews_in_days" in prompt
+    assert "new_subscription_card" in prompt
+    assert "new_subscription_notes" in prompt
+    assert "new_subscription_is_claimable" in prompt
+
+
+# ---------- recurring tasks (not just daily reminders) ----------
+# Regression guards for the other Round 3 feature: a to-do can now repeat
+# at weekly/biweekly/monthly/quarterly/annual cadences (not just the
+# existing daily-only add_reminder), e.g. "add a task to claim my gym
+# membership every month". See db.py's RECURRENCE_FREQUENCIES and
+# mark_task_done's cycle-advance behavior.
+
+def test_parse_system_prompt_log_task_has_a_recurrence_field():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert '"recurrence": "weekly" | "biweekly" | "monthly" | "quarterly" | "annual" | null' in prompt
+
+
+def test_parse_system_prompt_edit_task_has_recurrence_correction_fields():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "new_task_recurrence" in prompt
+    assert "remove_recurrence" in prompt
+
+
+def test_extract_task_system_prompt_also_covers_recurrence():
+    """/addtask (extract_task) should have the same recurrence capability as
+    the natural-language log_task path, not a narrower one."""
+    assert "recurrence" in ai.TASK_EXTRACT_SYSTEM_PROMPT
+
+
+# ---------- casual conversation grounded in a real month-to-date total ----------
+# Regression guards for a real gap: "what's my total monthly expenditure" /
+# "how much have I spent this month" had no reliable real-number answer --
+# it risked landing on "trend" (which only computes a first/last/min/max/
+# change trajectory, the wrong SHAPE of answer for a flat total) or on
+# "casual" with no month-to-date figure in today_snapshot to ground it.
+# Fixed by adding db.get_month_to_date_total to today_snapshot (see
+# handlers._casual_reply_text) and a CRITICAL classification note steering
+# plain total/sum questions to "casual" instead of "trend".
+
+def test_casual_system_prompt_describes_month_to_date_snapshot_field():
+    prompt = ai.CASUAL_SYSTEM_PROMPT
+    assert '"month_to_date"' in prompt
+    assert "what's my total spend this month" in prompt
+
+
+def test_parse_system_prompt_routes_a_plain_total_question_to_casual_not_trend():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "how much have I spent this month" in prompt
+    assert "is NOT \"trend\", even when it's about spending" in prompt
+
+
+def test_answer_casually_includes_month_to_date_in_the_prompt(monkeypatch):
+    fake = _mock_recording_client(monkeypatch, "You've spent $420.69 so far this month.")
+    today_snapshot = {"month_to_date": {"total": 420.69, "days_elapsed": 12, "month_start": "2026-10-01"}}
+    ai.answer_casually("what's my total spend this month?", [], [], today_snapshot)
+    sent = fake.calls[0]["messages"][0]["content"]
+    assert "420.69" in sent

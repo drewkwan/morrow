@@ -44,27 +44,44 @@ def _due_at_from_fields(due_in_days, due_time) -> str | None:
 
 def _recent_tasks_for_ai(chat_id: int) -> list:
     """Open (not-done) tasks, soonest due first -- what a task correction
-    (mark_done/delete) may target. Deliberately db.get_open_tasks, not
+    (mark_done/delete/edit) may target. Deliberately db.get_open_tasks, not
     get_recent_tasks -- a done or long-since-created task shouldn't be a
-    valid correction target for a fresh 'mark that done' message."""
+    valid correction target for a fresh 'mark that done' message.
+    recurrence_frequency is included so the AI can tell a correction like
+    "stop reminding me about this" apart from a plain delete -- see ai.py's
+    edit_task guidance."""
     rows = db.get_open_tasks(chat_id, limit=20)
-    return [{"id": r["id"], "title": r["title"], "due_at": r["due_at"]} for r in rows]
+    return [
+        {"id": r["id"], "title": r["title"], "due_at": r["due_at"], "recurrence_frequency": r["recurrence_frequency"]}
+        for r in rows
+    ]
+
+
+def _recurrence_from_fields(recurrence) -> str | None:
+    """A task is recurring only when the model names one of
+    db.RECURRENCE_FREQUENCIES explicitly -- any other value (missing,
+    unrecognized, or the model guessing at a cadence that wasn't actually
+    said) falls back to a plain one-off to-do rather than silently making
+    something recur that wasn't meant to."""
+    return recurrence if recurrence in db.RECURRENCE_FREQUENCIES else None
 
 
 async def _log_task_and_reply(update: Update, chat_id: int, data: dict):
     """data may come from either parse_message's natural-language schema
-    (task_title/task_due_in_days/task_due_time/task_notes) or extract_task's
-    own field names (title/due_in_days/due_time/notes) -- merged the same
-    way vitals._log_vitals_and_reply merges vitals_notes/notes, so /addtask
-    and the natural-language path share this one code path."""
+    (task_title/task_due_in_days/task_due_time/task_notes/task_recurrence)
+    or extract_task's own field names (title/due_in_days/due_time/notes/
+    recurrence) -- merged the same way vitals._log_vitals_and_reply merges
+    vitals_notes/notes, so /addtask and the natural-language path share
+    this one code path."""
     title = data.get("task_title") or data.get("title") or "to-do"
     due_in_days = data.get("task_due_in_days")
     if due_in_days is None:
         due_in_days = data.get("due_in_days")
     due_time = data.get("task_due_time") or data.get("due_time")
     notes = data.get("task_notes") or data.get("notes")
+    recurrence_frequency = _recurrence_from_fields(data.get("task_recurrence") or data.get("recurrence"))
     due_at = _due_at_from_fields(due_in_days, due_time)
-    task_id = db.add_task(chat_id, title, due_at, notes)
+    task_id = db.add_task(chat_id, title, due_at, notes, recurrence_frequency)
     row = db.get_task(chat_id, task_id)
     await _reply(update, chat_id, f"Added: {_task_line(row)}")
 
@@ -94,8 +111,9 @@ async def _log_tasks_and_reply(update: Update, chat_id: int, tasks: list):
             due_in_days = t.get("due_in_days")
         due_time = t.get("task_due_time") or t.get("due_time")
         notes = t.get("task_notes") or t.get("notes")
+        recurrence_frequency = _recurrence_from_fields(t.get("task_recurrence") or t.get("recurrence"))
         due_at = _due_at_from_fields(due_in_days, due_time)
-        task_id = db.add_task(chat_id, title, due_at, notes)
+        task_id = db.add_task(chat_id, title, due_at, notes, recurrence_frequency)
         row = db.get_task(chat_id, task_id)
         lines.append(_task_line(row))
 

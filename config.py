@@ -81,6 +81,17 @@ MORNING_BRIEFING_MINUTE = int(os.environ.get("MORNING_BRIEFING_MINUTE", "30"))
 RECURRING_FINANCE_HOUR = int(os.environ.get("RECURRING_FINANCE_HOUR", "6"))
 RECURRING_FINANCE_MINUTE = int(os.environ.get("RECURRING_FINANCE_MINUTE", "30"))
 
+# Weekly subscription-renewal digest -- see subscriptions.subscriptions_digest_tick.
+# Deliberately separate from the daily morning briefing (Andrew's explicit
+# choice: a renewal heads-up is useful once a week, not every single day).
+# Runs Monday mornings (0 = Monday, matching PTB's JobQueue.run_daily `days`
+# convention) at the same local time as the morning briefing, listing
+# anything renewing in the next SUBSCRIPTION_DIGEST_LOOKAHEAD_DAYS days.
+SUBSCRIPTION_DIGEST_WEEKDAY = int(os.environ.get("SUBSCRIPTION_DIGEST_WEEKDAY", "0"))
+SUBSCRIPTION_DIGEST_HOUR = int(os.environ.get("SUBSCRIPTION_DIGEST_HOUR", "7"))
+SUBSCRIPTION_DIGEST_MINUTE = int(os.environ.get("SUBSCRIPTION_DIGEST_MINUTE", "30"))
+SUBSCRIPTION_DIGEST_LOOKAHEAD_DAYS = int(os.environ.get("SUBSCRIPTION_DIGEST_LOOKAHEAD_DAYS", "7"))
+
 # Local time (in BOT_TIMEZONE) the evening "quiet day" nudge checks in --
 # see nudges.py. Deliberately late evening, not late afternoon: the point is
 # to catch a day where genuinely nothing got logged at all, not to nag

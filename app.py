@@ -64,7 +64,13 @@ from nudges import evening_nudge_tick
 from nutrition import handle_photo, logmeal_cmd, recentmeals
 from reminders import addreminder_cmd, donereminder_cmd, reminders_cmd, removereminder_cmd
 from rundown import daystats_cmd, rundown_cmd, trend_cmd
-from subscriptions import addsubscription_cmd, removesubscription_cmd, subscriptions_cmd, subscriptions_tick
+from subscriptions import (
+    addsubscription_cmd,
+    removesubscription_cmd,
+    subscriptions_cmd,
+    subscriptions_digest_tick,
+    subscriptions_tick,
+)
 from summary import summary
 from tasks import addtask_cmd, done_cmd, tasks_cmd
 from vitals import logvitals_cmd, recentvitals
@@ -124,8 +130,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "See what I remember: /memory\n"
         "Remove something remembered: /forget <label>\n\n"
         "Add a to-do: /addtask call the dentist tomorrow 5pm\n"
+        "Add a repeating to-do (e.g. a monthly gym-fee claim): just say so naturally, e.g. "
+        "\"remind me to claim my gym membership every month\"\n"
         "See what's open: /tasks\n"
-        "Mark one done: /done <id>\n\n"
+        "Mark one done (a repeating to-do comes right back for its next cycle instead of closing): /done <id>\n\n"
         "Add a daily reminder (recurs every day, e.g. take hair pills): /addreminder take hair pills\n"
         "See your daily reminders: /reminders\n"
         "Mark one done for today only (comes back tomorrow): /donereminder <id>\n"
@@ -139,10 +147,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "How one metric has progressed over time: /trend <weight|sleep|knee_pain|calories_in|"
         "calories_out|spending> [N days|all]\n"
         "See today's briefing (today's budget + due to-dos + a look back at yesterday) any time: /morning\n\n"
-        "Add a recurring subscription (auto-logs as an expense every month): /addsubscription Netflix "
-        "15.98 25\n"
-        "See active subscriptions: /subscriptions\n"
-        "Stop one auto-logging: /removesubscription <id>\n\n"
+        "Add a recurring subscription (auto-logs as a real expense on its renewal date): "
+        "/addsubscription Netflix 15.98 monthly 2026-10-25, or just tell me naturally with "
+        "amount/cadence/renewal date\n"
+        "See active subscriptions (+ a combined monthly-equivalent total): /subscriptions\n"
+        "Stop one auto-logging: /removesubscription <id>\n"
+        "Heads-up on what's renewing soon arrives as its own weekly digest message, separate from "
+        "/morning\n\n"
         "Set up recurring salary (auto-posts on payday): /setincome 6000 25 20% 5%\n"
         "View the current salary setup: /incomeconfig -- stop it: /clearincome\n"
         "Log a one-off bonus/income by hand: /addincome 500 freelance gig, or just tell me naturally\n"
@@ -268,6 +279,12 @@ def main():
             config.EVENING_NUDGE_HOUR, config.EVENING_NUDGE_MINUTE, tzinfo=ZoneInfo(config.BOT_TIMEZONE)
         )
         app.job_queue.run_daily(evening_nudge_tick, time=nudge_time)
+        digest_time = datetime.time(
+            config.SUBSCRIPTION_DIGEST_HOUR, config.SUBSCRIPTION_DIGEST_MINUTE, tzinfo=ZoneInfo(config.BOT_TIMEZONE)
+        )
+        app.job_queue.run_daily(
+            subscriptions_digest_tick, time=digest_time, days=(config.SUBSCRIPTION_DIGEST_WEEKDAY,)
+        )
     else:
         logger.warning(
             "JobQueue not available -- install with pip install python-telegram-bot[job-queue] "

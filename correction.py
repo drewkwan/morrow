@@ -56,6 +56,12 @@ LAST_CORRECTION_KEY = "last_correction"
 # None" reasoning). Only used locally within the edit_task branch below.
 _DUE_UNCHANGED = object()
 
+# Same three-state reasoning as _DUE_UNCHANGED above, for a task's
+# recurrence_frequency: "wasn't mentioned" (leave as-is) has to be
+# distinguishable from "explicitly make this a one-off again" (a real
+# None), which a plain `parsed.get(...) is None` check can't tell apart.
+_RECURRENCE_UNCHANGED = object()
+
 # A short reply matching one of these, sent as the very next message after a
 # correction, reverts it directly -- deterministic and exact-match only (not
 # a substring check), so an expense description that happens to contain the
@@ -113,11 +119,13 @@ VITALS_DOMAIN_ACTIONS = {"edit_date", "edit_vitals", "delete"}
 # reach instead removes the guess entirely (see ai.py's correction_action
 # rules for the matching CRITICAL warning).
 EVENT_DOMAIN_ACTIONS = {"reschedule", "delete"}
-# subscription has no "edit_date" -- its one date-shaped field is billing_day,
-# which is part of the flexible edit_subscription action (name/amount/
-# currency/billing_day/category can all change in one correction, same
-# "give me the whole picture" shape as edit_task/edit_meal), not a backward-
-# looking days_ago move like a logged entry's date.
+# subscription has no "edit_date" -- its one date-shaped field is
+# next_renewal_date, which is part of the flexible edit_subscription action
+# (name/amount/currency/frequency/next_renewal_date/category/card/notes/
+# is_claimable can all change in one correction, same "give me the whole
+# picture" shape as edit_task/edit_meal), not a backward-looking days_ago
+# move like a logged entry's date -- a subscription's renewal date is
+# always forward-looking, never "when did this happen".
 SUBSCRIPTION_DOMAIN_ACTIONS = {"edit_subscription", "delete"}
 # income and deduction entries DO have a real logged date (when the money
 # actually arrived/left), so both get edit_date (backward-looking days_ago,
@@ -151,7 +159,8 @@ _DOMAIN_OPS = {
                 "restore": db.restore_deleted_vitals, "line": _vitals_line, "edit_vitals": db.edit_vitals},
     "task": {"noun": "to-do", "recent_cmd": "/tasks",
               "actions": TASK_DOMAIN_ACTIONS,
-              "actions_desc": "only marking one done, editing its title/due date/notes, or deleting one",
+              "actions_desc": "only marking one done, editing its title/due date/notes/recurrence, or "
+                               "deleting one",
               "get": db.get_task, "delete": db.delete_task, "restore": db.restore_deleted_task,
               "line": _task_line, "mark_done": db.mark_task_done, "unmark_done": db.unmark_task_done,
               "edit_task": db.edit_task},
@@ -163,7 +172,8 @@ _DOMAIN_OPS = {
                "line": _event_line, "reschedule": db.edit_event_date},
     "subscription": {"noun": "subscription", "recent_cmd": "/subscriptions",
                        "actions": SUBSCRIPTION_DOMAIN_ACTIONS,
-                       "actions_desc": "correcting the name/amount/currency/billing day/category, or deleting one",
+                       "actions_desc": "correcting the name/amount/currency/frequency/renewal date/card/"
+                                        "notes/claimable status, or deleting one",
                        "get": db.get_subscription, "delete": db.delete_subscription,
                        "restore": db.restore_deleted_subscription, "line": _subscription_line,
                        "edit_subscription": db.edit_subscription},
@@ -310,10 +320,25 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
         elif remove_due_date:
             new_due_at = None  # a real value: explicitly clear the due date
 
-        if new_title is None and new_notes is None and new_due_at is _DUE_UNCHANGED:
+        # Same three-state shape as new_due_at above -- new_task_recurrence
+        # (one of db.RECURRENCE_FREQUENCIES) means "make/keep this
+        # recurring at this cadence"; remove_recurrence means "stop
+        # repeating, make it a plain one-off"; neither mentioned leaves it
+        # untouched (see _RECURRENCE_UNCHANGED's docstring).
+        new_task_recurrence = parsed.get("new_task_recurrence")
+        remove_recurrence = bool(parsed.get("remove_recurrence"))
+        new_recurrence_frequency = _RECURRENCE_UNCHANGED
+        if new_task_recurrence in db.RECURRENCE_FREQUENCIES:
+            new_recurrence_frequency = new_task_recurrence
+        elif remove_recurrence:
+            new_recurrence_frequency = None  # a real value: explicitly stop recurring
+
+        if (new_title is None and new_notes is None and new_due_at is _DUE_UNCHANGED
+                and new_recurrence_frequency is _RECURRENCE_UNCHANGED):
             await _reply(
                 update, chat_id,
-                f"What should I change about that {noun} -- the title, the due date, or a note?"
+                f"What should I change about that {noun} -- the title, the due date, how often it repeats, "
+                "or a note?"
             )
             return
 
@@ -327,12 +352,16 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
             edits["new_due_at"] = new_due_at  # may genuinely be None -- that's the clear case
         if new_notes is not None:
             edits["new_notes"] = new_notes
+        if new_recurrence_frequency is not _RECURRENCE_UNCHANGED:
+            edits["new_recurrence_frequency"] = new_recurrence_frequency  # may genuinely be None
 
         old_title, old_due_at, old_notes = row["title"], row["due_at"], row["notes"]
+        old_recurrence_frequency = row["recurrence_frequency"]
         updated = ops["edit_task"](chat_id, target_id, **edits)
         context.chat_data[LAST_CORRECTION_KEY] = {
             "domain": domain, "action": "edit_task", "expense_id": target_id,
             "old_title": old_title, "old_due_at": old_due_at, "old_notes": old_notes,
+            "old_recurrence_frequency": old_recurrence_frequency,
         }
         bits = []
         if new_title is not None:
@@ -341,6 +370,9 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
             bits.append(f"due {updated['due_at']}" if updated["due_at"] else "due date removed")
         if new_notes is not None:
             bits.append("notes updated")
+        if new_recurrence_frequency is not _RECURRENCE_UNCHANGED:
+            bits.append(f"repeats {updated['recurrence_frequency']}" if updated["recurrence_frequency"]
+                        else "no longer repeats")
         await _reply(update, chat_id, f"Updated -- {', '.join(bits)}. Reply 'undo' if that's wrong.")
         return
 
@@ -516,22 +548,38 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
         return
 
     if action == "edit_subscription":
-        # Corrects a subscription's own config -- a price change, a billing-
-        # day move, a rename -- in place, without a delete-and-re-add round
-        # trip. Deliberately does NOT touch any already-posted expense row
-        # for a past cycle (see db.edit_subscription's docstring); only
-        # future auto-posts pick up the new config. See ai.py's
-        # edit_subscription prompt rules.
+        # Corrects a subscription's own config -- a price change, a cadence
+        # change, a renewal-date move, a rename -- in place, without a
+        # delete-and-re-add round trip. Deliberately does NOT touch any
+        # already-posted expense row for a past cycle (see
+        # db.edit_subscription's docstring); only future auto-posts pick up
+        # the new config. See ai.py's edit_subscription prompt rules.
+        # new_subscription_renews_in_days is forward-looking (like
+        # edit_task's due_in_days, unlike edit_date's backward-only
+        # days_ago) -- a renewal date is never "when did this happen".
         new_name = parsed.get("new_subscription_name")
         new_amount = parsed.get("new_subscription_amount")
         new_currency = parsed.get("new_subscription_currency")
-        new_billing_day = parsed.get("new_subscription_billing_day")
+        new_frequency = parsed.get("new_subscription_frequency")
+        new_renews_in_days = parsed.get("new_subscription_renews_in_days")
         new_category = parsed.get("new_subscription_category")
+        new_card = parsed.get("new_subscription_card")
+        new_notes = parsed.get("new_subscription_notes")
+        new_is_claimable = parsed.get("new_subscription_is_claimable")
 
-        if all(v is None for v in (new_name, new_amount, new_currency, new_billing_day, new_category)):
+        new_next_renewal_date = None
+        if isinstance(new_renews_in_days, int) and new_renews_in_days >= 0:
+            today = date.fromisoformat(db.today_str())
+            new_next_renewal_date = (today + timedelta(days=new_renews_in_days)).isoformat()
+
+        if all(v is None for v in (
+            new_name, new_amount, new_currency, new_frequency, new_next_renewal_date,
+            new_category, new_card, new_notes, new_is_claimable,
+        )):
             await _reply(
                 update, chat_id,
-                f"What should I fix about that {noun} -- the name, amount, currency, billing day, or category?"
+                f"What should I fix about that {noun} -- the name, amount, currency, how often it bills, "
+                "its next renewal date, category, card, notes, or whether it's claimable?"
             )
             return
 
@@ -542,18 +590,31 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
             edits["new_amount"] = new_amount
         if new_currency is not None:
             edits["new_currency"] = new_currency
-        if isinstance(new_billing_day, int) and 1 <= new_billing_day <= 31:
-            edits["new_billing_day"] = new_billing_day
+        if new_frequency in db.RECURRENCE_FREQUENCIES:
+            edits["new_frequency"] = new_frequency
+        if new_next_renewal_date is not None:
+            edits["new_next_renewal_date"] = new_next_renewal_date
         if new_category is not None:
             edits["new_category"] = new_category
+        if new_card is not None:
+            edits["new_card"] = new_card
+        if new_notes is not None:
+            edits["new_notes"] = new_notes
+        if new_is_claimable is not None:
+            edits["new_is_claimable"] = bool(new_is_claimable)
 
         old_name, old_amount, old_currency = row["name"], row["amount"], row["currency"]
-        old_billing_day, old_category = row["billing_day"], row["category"]
+        old_frequency, old_next_renewal_date = row["frequency"], row["next_renewal_date"]
+        old_category, old_card, old_notes, old_is_claimable = (
+            row["category"], row["card"], row["notes"], row["is_claimable"],
+        )
         updated = ops["edit_subscription"](chat_id, target_id, **edits)
         context.chat_data[LAST_CORRECTION_KEY] = {
             "domain": domain, "action": "edit_subscription", "expense_id": target_id,
             "old_name": old_name, "old_amount": old_amount, "old_currency": old_currency,
-            "old_billing_day": old_billing_day, "old_category": old_category,
+            "old_frequency": old_frequency, "old_next_renewal_date": old_next_renewal_date,
+            "old_category": old_category, "old_card": old_card, "old_notes": old_notes,
+            "old_is_claimable": old_is_claimable,
         }
         await _reply(update, chat_id, f"Updated -- {ops['line'](updated)}. Reply 'undo' if that's wrong.")
         return
@@ -626,11 +687,27 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
         return
 
     if action == "mark_done":
+        # For a recurring task, db.mark_task_done doesn't close it -- it
+        # advances due_at to the next cycle and leaves it open (see that
+        # function's docstring). Undo for THAT case means putting due_at
+        # back, not flipping done back to 0 (nothing ever set done=1), so
+        # the old due_at has to be snapshotted here, before the call, while
+        # it's still the old value -- db.unmark_task_done requires it as
+        # restore_due_at for a recurring task's undo to do anything at all.
+        is_recurring_task = domain == "task" and row.get("recurrence_frequency")
+        old_due_at = row.get("due_at") if is_recurring_task else None
         updated = ops["mark_done"](chat_id, target_id)
-        context.chat_data[LAST_CORRECTION_KEY] = {
-            "domain": domain, "action": "mark_done", "expense_id": target_id,
-        }
-        await _reply(update, chat_id, f"Marked done: {ops['line'](updated)}. Reply 'undo' if that's wrong.")
+        snapshot = {"domain": domain, "action": "mark_done", "expense_id": target_id}
+        if is_recurring_task:
+            snapshot["old_due_at"] = old_due_at
+        context.chat_data[LAST_CORRECTION_KEY] = snapshot
+        if is_recurring_task:
+            await _reply(
+                update, chat_id,
+                f"Done for this cycle -- next up: {ops['line'](updated)}. Reply 'undo' if that's wrong."
+            )
+        else:
+            await _reply(update, chat_id, f"Marked done: {ops['line'](updated)}. Reply 'undo' if that's wrong.")
         return
 
     if action == "delete":
@@ -988,8 +1065,15 @@ async def _revert_last_correction(update: Update, context: ContextTypes.DEFAULT_
             row = ops["edit_date"](chat_id, snap["expense_id"], snap["old_date"])
             await _reply(update, chat_id, f"Reverted -- {ops['noun']} is back to {row[ops['date_field']]}.")
         elif action == "mark_done":
-            row = ops["unmark_done"](chat_id, snap["expense_id"])
-            await _reply(update, chat_id, f"Reverted -- back to open: {ops['line'](row)}")
+            if "old_due_at" in snap:
+                # A recurring task's "done" (see the forward branch above)
+                # never set done=1 -- undo means restoring the pre-advance
+                # due_at, not flipping a done flag that was never set.
+                row = ops["unmark_done"](chat_id, snap["expense_id"], restore_due_at=snap["old_due_at"])
+                await _reply(update, chat_id, f"Reverted -- back to this cycle: {ops['line'](row)}")
+            else:
+                row = ops["unmark_done"](chat_id, snap["expense_id"])
+                await _reply(update, chat_id, f"Reverted -- back to open: {ops['line'](row)}")
         elif action == "edit_task":
             # Always pass all three explicitly, even where a value is None
             # (e.g. it had no due date before) -- db.edit_task's _UNSET
@@ -997,7 +1081,8 @@ async def _revert_last_correction(update: Update, context: ContextTypes.DEFAULT_
             # so a real None here correctly clears the field back to no-date/
             # no-notes rather than leaving whatever the edit just set.
             row = ops["edit_task"](chat_id, snap["expense_id"], new_title=snap["old_title"],
-                                    new_due_at=snap["old_due_at"], new_notes=snap["old_notes"])
+                                    new_due_at=snap["old_due_at"], new_notes=snap["old_notes"],
+                                    new_recurrence_frequency=snap["old_recurrence_frequency"])
             await _reply(update, chat_id, f"Reverted -- back to \"{row['title']}\".")
         elif action == "edit_meal":
             # Same "pass every field back explicitly" discipline as edit_task
@@ -1032,8 +1117,10 @@ async def _revert_last_correction(update: Update, context: ContextTypes.DEFAULT_
         elif action == "edit_subscription":
             row = ops["edit_subscription"](
                 chat_id, snap["expense_id"], new_name=snap["old_name"], new_amount=snap["old_amount"],
-                new_currency=snap["old_currency"], new_billing_day=snap["old_billing_day"],
-                new_category=snap["old_category"],
+                new_currency=snap["old_currency"], new_frequency=snap["old_frequency"],
+                new_next_renewal_date=snap["old_next_renewal_date"], new_category=snap["old_category"],
+                new_card=snap["old_card"], new_notes=snap["old_notes"],
+                new_is_claimable=snap["old_is_claimable"],
             )
             await _reply(update, chat_id, f"Reverted -- back to {ops['line'](row)}.")
         elif action == "edit_income":

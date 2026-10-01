@@ -44,6 +44,31 @@ def _no_op_extra_fields():
     }
 
 
+# ---------- db.py: day_matches_billing_day ----------
+#
+# Used only by income_tick's recurring-salary pay day now -- subscriptions
+# moved to the more general advance_date_by_frequency (see
+# test_subscriptions.py) once they needed non-monthly cadences, but a
+# salary's pay day stays this simpler plain-monthly concept by design (see
+# day_matches_billing_day's own docstring).
+
+def test_day_matches_billing_day_exact():
+    assert db.day_matches_billing_day(dt.date(2026, 10, 25), 25) is True
+    assert db.day_matches_billing_day(dt.date(2026, 10, 24), 25) is False
+
+
+def test_day_matches_billing_day_clamps_to_last_day_of_short_month():
+    """A billing_day of 31 doesn't exist in a 30-day month -- it should
+    clamp to that month's real last day rather than silently never firing
+    that month."""
+    assert db.day_matches_billing_day(dt.date(2026, 4, 30), 31) is True
+    assert db.day_matches_billing_day(dt.date(2026, 4, 29), 31) is False
+
+
+def test_day_matches_billing_day_clamps_for_february():
+    assert db.day_matches_billing_day(dt.date(2026, 2, 28), 31) is True  # 2026 is not a leap year
+
+
 # ---------- db.py: income_config ----------
 
 def test_set_and_get_income_config():
@@ -830,3 +855,30 @@ def test_casual_reply_today_snapshot_includes_net_worth(monkeypatch):
     update = FakeUpdate(CHAT, text="what's my net worth looking like?")
     _run(bot.handle_text(update, FakeContext()))
     assert captured["today_snapshot"]["net_worth"]["total_income"] == 4500
+
+
+def test_casual_reply_today_snapshot_includes_month_to_date_total(monkeypatch):
+    """Regression guard: a genuine 'what's my total spend this month'
+    question must be answerable from a real calendar-month-to-date sum, not
+    guessed or misrouted to the 'trend' intent's day-by-day trajectory shape
+    -- see handlers._casual_reply_text's docstring and PARSE_SYSTEM_PROMPT's
+    "trend" paragraph's CRITICAL total-vs-trajectory distinction."""
+    db.get_or_create_user(CHAT)
+    db.add_expense(CHAT, 42.50, "SGD", "groceries", "Groceries")
+    captured = {}
+
+    def fake_answer_casually(message, recent_messages, memory_list, today_snapshot, recent_lifts):
+        captured["today_snapshot"] = today_snapshot
+        return "You've spent $42.50 so far this month."
+
+    monkeypatch.setattr(bot.ai, "answer_casually", fake_answer_casually)
+    monkeypatch.setattr(
+        bot.ai, "parse_message",
+        lambda *a, **kw: {
+            "intent": "casual", "clarification_question": None, "casual_reply": "fallback",
+            **_no_op_extra_fields(),
+        }
+    )
+    update = FakeUpdate(CHAT, text="what's my total monthly expenditure on expenses?")
+    _run(bot.handle_text(update, FakeContext()))
+    assert captured["today_snapshot"]["month_to_date"]["total"] == 42.50

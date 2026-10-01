@@ -146,7 +146,19 @@ COMMAND_LIST = (
     "/addevent <description> (add a one-off scheduled event/appointment, e.g. 'dinner with Mel next Monday'), "
     "/events (show what's coming up), "
     "/rescheduleevent <id> <days from today> (move an event to a new day), "
-    "/removeevent <id> (remove a scheduled event)"
+    "/removeevent <id> (remove a scheduled event), "
+    "/addsubscription <name> <amount> [currency] <billing day 1-31> [category] (a recurring monthly charge "
+    "that auto-logs itself as an expense every month), /subscriptions (list active subscriptions), "
+    "/removesubscription <id> (stop a subscription auto-logging), "
+    "/setincome <gross amount> [currency] <pay day 1-31> [cpf rate%] [stock rate%] (set up recurring salary "
+    "that auto-posts on payday), /incomeconfig (view the current recurring salary setup), "
+    "/clearincome (stop the recurring salary auto-posting), "
+    "/addincome <amount> [currency] <description> (log a one-off bonus/income by hand), "
+    "/recentincome [n], /removeincome <id>, "
+    "/adddeduction <amount> [currency] <label> (log tax/CPF/etc -- reduces net worth without counting "
+    "toward the daily spending target), /recentdeductions [n], /removededuction <id>, "
+    "/networth (total income minus deductions minus spend -- the real money picture, separate from the "
+    "daily spending target/balance)"
 )
 
 # Shared by every calorie-estimating prompt (parse_message's log_meal rules, MEAL_ESTIMATE_SYSTEM_PROMPT,
@@ -209,13 +221,37 @@ source of durable facts -- never invent a plan or preference that isn't actually
 
 Respond with ONLY a JSON object, no other text, matching this shape:
 {{
-  "intent": "log_expense" | "log_meal" | "log_workout" | "log_lift" | "log_vitals" | "log_task" | "add_reminder" | "add_event" | "correction" | "show_balance" | "show_recent" | "show_tasks" | "show_reminders" | "show_events" | "rundown" | "day_stats" | "trend" | "remember" | "forget" | "show_memory" | "casual" | "clarification",
+  "intent": "log_expense" | "log_meal" | "log_workout" | "log_lift" | "log_vitals" | "log_task" | "add_reminder" | "add_event" | "log_income" | "log_deduction" | "log_subscription" | "correction" | "show_balance" | "show_recent" | "show_tasks" | "show_reminders" | "show_events" | "rundown" | "day_stats" | "trend" | "remember" | "forget" | "show_memory" | "casual" | "clarification",
 
   "expenses": [list of one or more objects, log_expense only -- ALWAYS a list, even for a single purchase]
     each shaped: {{"amount": number, "currency": one of the currency list or null if not mentioned,
     "description": string, "category": one of the category list or null if unclear,
     "is_claimable": true/false/null, "logged_days_ago": integer or null (see logged_days_ago rule below --
     per item, since a single message can mix "yesterday I paid X, and today Y")}},
+
+  "income": [list of one or more objects, log_income only -- ALWAYS a list, even for a single amount]
+    each shaped: {{"amount": number -- the real NET take-home figure that actually landed/will land in the
+    bank account, never the gross, "currency": one of the currency list or null if not mentioned,
+    "source": "salary" | "bonus" | "other", "description": short string or null (what it's from, e.g.
+    "year-end bonus", "freelance logo work"), "gross_amount": number or null (ONLY if the message gives a
+    separate gross figure, e.g. "got a $1000 bonus, $150 went to CPF so $850 hit my account" ->
+    amount=850, gross_amount=1000), "cpf_amount": number or null (paired with gross_amount when given),
+    "stock_amount": number or null (paired with gross_amount when given), "logged_days_ago": integer or
+    null (see logged_days_ago rule below -- per item)}},
+
+  "deductions": [list of one or more objects, log_deduction only -- ALWAYS a list, even for a single amount]
+    each shaped: {{"amount": number, "currency": one of the currency list or null if not mentioned,
+    "label": short string (e.g. "income tax", "CPF top-up"), "logged_days_ago": integer or null (see
+    logged_days_ago rule below -- per item)}},
+
+  "subscriptions": [list of one or more objects, log_subscription only -- ALWAYS a list, even for a single
+    one, and however many distinct recurring charges are named in the message -- a pasted-in list of several
+    subscriptions at once (e.g. registering a whole starter list in one message) means one object per
+    subscription, not one merged entry] each shaped: {{"name": short string (e.g. "Netflix", "Gym membership"),
+    "amount": number, "currency": one of the currency list or null if not mentioned, "billing_day": integer
+    1-31 -- which day of the month it bills, REQUIRED for each item (if genuinely not stated for one item in an
+    otherwise-clear bulk list, still include the object with billing_day null rather than dropping it -- the
+    code will ask), "category": one of the category list or null if unclear}},
 
   "meals": [list of one or more objects, log_meal only -- ALWAYS a list, even for a single meal]
     each shaped: {{"meal_type": one of the meal type list, or null, "items": [list of individual food/drink
@@ -301,12 +337,14 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     date, e.g. "by 5pm friday" -> "17:00"), "notes": string or null (any extra detail worth keeping beyond the
     title)}},
 
-  "target_domain": "expense" | "meal" | "workout" | "lift" | "vitals" | "task" | "event" | "balance" or null (correction
+  "target_domain": "expense" | "meal" | "workout" | "lift" | "vitals" | "task" | "event" | "balance" | "subscription" | "income" | "deduction" | "income_config" or null (correction
     only -- which recent-<domain> list target_expense_id refers to; null means "expense", for backward
-    compatibility; "balance" is different from the rest -- see below and the adjust_balance rule),
+    compatibility; "balance" and "income_config" are different from the rest -- see below and the
+    adjust_balance/edit_income_config rules),
   "target_expense_id": integer or null (correction only -- MUST be an "id" from the matching recent-<domain>
-    list; not applicable/always null for target_domain="balance", which has no recent-item list),
-  "correction_action": "edit_date" | "edit_currency" | "edit_amount" | "edit_description" | "edit_category" | "delete" | "mark_done" | "edit_task" | "edit_meal" | "edit_workout" | "edit_lift" | "edit_vitals" | "reschedule" | "adjust_balance" | "edit_unsupported_field" or null (correction only),
+    list; not applicable/always null for target_domain="balance" or "income_config", neither of which has a
+    recent-item list -- each is a single per-chat row, not a row with an id),
+  "correction_action": "edit_date" | "edit_currency" | "edit_amount" | "edit_description" | "edit_category" | "delete" | "mark_done" | "edit_task" | "edit_meal" | "edit_workout" | "edit_lift" | "edit_vitals" | "reschedule" | "adjust_balance" | "edit_subscription" | "edit_income" | "edit_deduction" | "edit_income_config" | "edit_unsupported_field" or null (correction only),
   "days_ago": integer or null (correction + edit_date only -- 0 = today, 1 = yesterday, 2 = two days ago, etc.
     up to 14. Extract WHICH day the user means as a plain count of days back -- for an explicit calendar date
     or weekday ("move it to the 18th"), compute this against "Today's actual date" given at the top of this
@@ -389,6 +427,42 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     actually changes the title itself, not just its due date or notes),
   "new_category": one of the category list or null (correction + edit_category only),
 
+  "new_subscription_name": string or null (correction + edit_subscription only, target_domain="subscription" --
+    ONLY set if the message actually renames it),
+  "new_subscription_amount": number or null (correction + edit_subscription only -- ONLY set if the message
+    actually corrects the price),
+  "new_subscription_currency": one of the currency list or null (correction + edit_subscription only -- ONLY
+    set if the message actually changes the currency),
+  "new_subscription_billing_day": integer 1-31 or null (correction + edit_subscription only -- ONLY set if the
+    message actually moves the billing day),
+  "new_subscription_category": one of the category list or null (correction + edit_subscription only -- ONLY
+    set if the message actually changes the category),
+  "new_income_source": "salary" | "bonus" | "other" or null (correction + edit_income only,
+    target_domain="income" -- ONLY set if the message actually changes what kind of income it was),
+  "new_income_description": string or null (correction + edit_income only -- ONLY set if the message actually
+    changes the description),
+  "new_income_amount": number or null (correction + edit_income only -- the corrected NET take-home figure,
+    never gross, same discipline as log_income -- ONLY set if the message actually corrects the amount),
+  "new_income_currency": one of the currency list or null (correction + edit_income only -- ONLY set if the
+    message actually changes the currency),
+  "new_deduction_label": string or null (correction + edit_deduction only, target_domain="deduction" -- ONLY
+    set if the message actually changes the label),
+  "new_deduction_amount": number or null (correction + edit_deduction only -- ONLY set if the message actually
+    corrects the amount),
+  "new_deduction_currency": one of the currency list or null (correction + edit_deduction only -- ONLY set if
+    the message actually changes the currency),
+  "new_income_config_gross_amount": number or null (correction + edit_income_config only,
+    target_domain="income_config" -- the new GROSS monthly salary, e.g. a raise or new job's pay. ONLY set if
+    the message actually gives a new gross figure),
+  "new_income_config_currency": one of the currency list or null (correction + edit_income_config only -- ONLY
+    set if the message actually changes the salary's currency),
+  "new_income_config_pay_day": integer 1-31 or null (correction + edit_income_config only -- ONLY set if the
+    message actually moves the pay day),
+  "new_income_config_cpf_rate": number or null (correction + edit_income_config only -- a FRACTION, e.g. 0.2
+    for "20%" -- ONLY set if the message actually gives a new CPF rate),
+  "new_income_config_stock_rate": number or null (correction + edit_income_config only -- a FRACTION, same
+    convention as new_income_config_cpf_rate -- ONLY set if the message actually gives a new stock rate),
+
   "reminder_description": string or null (add_reminder only -- a short, actionable phrase for the DAILY habit
     itself, e.g. "take hair pills", "stretch before bed" -- not a full sentence, and never a due date/time,
     since a daily reminder has no deadline, it just recurs every day),
@@ -428,6 +502,42 @@ Deciding the intent:
   USD taxi", "$5 for lunch and $5 for coffee" -- two separate purchases in one message). Put EVERY distinct
   purchase mentioned as its own object in "expenses", even when there's only one -- it's always a list. Don't
   stop at the first one if the message clearly describes several.
+- "log_income": the message is reporting money RECEIVED -- a bonus, income from elsewhere (freelance work, a
+  side gig, a cash gift), or an off-schedule/backdated salary payment (e.g. "got my annual bonus today, $3000",
+  "freelance project paid me $800", "mom gave me $200"). This is distinct from the regular recurring salary,
+  which auto-posts itself on its configured payday (see /setincome) -- only use "log_income" for income OUTSIDE
+  that automatic schedule, or when the message explicitly describes logging a payment by hand regardless. Put
+  EVERY distinct amount mentioned as its own object in "income", even when there's only one. Set "source" to
+  "salary" only if this genuinely IS a salary payment being logged by hand (e.g. backdated, or from a second
+  job with no auto-post set up); "bonus" for a one-off work bonus; "other" for anything else (freelance, a
+  gift, side income). If the message breaks the amount into a gross figure and deductions (e.g. "got a $1000
+  bonus, $150 went to CPF so $850 hit my account"), set "amount" to the real NET take-home figure -- what
+  actually reached the bank account -- and gross_amount/cpf_amount/stock_amount to whatever breakdown was
+  given; never set "amount" to the gross, since the net figure is what actually changes the real money total
+  this feeds (see db.get_net_worth). A message reporting a normal purchase or discretionary spend is never
+  "log_income", even if it mentions a dollar figure moving between accounts -- this is specifically for money
+  arriving, not leaving.
+- "log_deduction": the message is reporting money that left the account WITHOUT being a discretionary
+  purchase -- income tax, a CPF top-up/voluntary contribution, or a similar statutory/account-level deduction
+  (e.g. "paid $800 income tax today", "topped up my CPF by $500"). This reduces the real money total
+  (db.get_net_worth) the same way an expense reduces it, but must NEVER be classified as "log_expense" -- the
+  whole point of this intent is that it's excluded from the daily spending target/streak math "log_expense"
+  feeds, since paying tax or topping up CPF isn't a lifestyle purchase. Put EVERY distinct deduction mentioned
+  as its own object in "deductions". If a message is genuinely a discretionary purchase (e.g. "paid $50 for
+  parking", "$20 for parking fines" -- these are still "log_expense", not this), prefer "log_expense" --
+  "log_deduction" is specifically for tax/statutory/account-level deductions, not purchases, however
+  unpleasant the purchase felt.
+- "log_subscription": the message is registering one or more NEW recurring monthly charges to auto-log
+  themselves going forward -- "I pay $15.98 for Netflix on the 25th", "add my gym membership, $80 a month on
+  the 1st", or a pasted-in bulk list of several at once ("Netflix 15.98 the 25th, Spotify 11.98 the 1st, gym 80
+  the 1st"). Put EVERY distinct subscription mentioned as its own object in "subscriptions", even when there's
+  only one -- the whole point of this intent is to let a long list be registered in a single message instead of
+  one command per subscription. This is distinct from "log_expense": a subscription here is CONFIG for a charge
+  that bills itself every month going forward, not a one-off purchase that already happened (a message like "I
+  paid for Netflix" with no sense of "set this up to recur" is "log_expense", not this). It's also distinct from
+  "log_income"/"log_deduction" -- those are money arriving/leaving the account, this is money that will leave on
+  a recurring schedule. If a billing day genuinely can't be determined for an otherwise-clear subscription, still
+  include the object (billing_day null) rather than dropping it -- the code will ask for just that one field.
 - "log_meal": the message is reporting food or drink just consumed (e.g. "coke zero and 750ml water", "had a
   mango", "dinner was rice, chicken and veg", "for breakfast: toast and coffee. For lunch: noodles and a latte"
   -- two separate meals in one message). Put EVERY distinct meal mentioned as its own object in "meals", even
@@ -524,12 +634,23 @@ Deciding the intent:
   not mark_done; but "correct both to 2026-09-23", "push day should be tomorrow", "actually dinner with Mel is
   Thursday not Wednesday" are target_domain="event", correction_action="reschedule" (NOT "delete" -- the event
   is moving to a different day, not going away -- see the CRITICAL warning below on this exact distinction)) --
-  OR about the
+  also "that Netflix subscription is actually $17 now", "move my gym membership billing to the 5th", "cancel my
+  Spotify subscription" (target_domain="subscription"); "that bonus was actually $600, not $500", "that income
+  entry should be tagged as a bonus, not salary", "delete that income entry, I logged it twice"
+  (target_domain="income"); "that CPF top-up was $600 not $500", "wrong, that tax payment was yesterday"
+  (target_domain="deduction") -- OR about the
   rolled-over balance/deficit itself rather than any one
-  logged item (target_domain="balance", see its own paragraph below). First decide target_domain from context
+  logged item (target_domain="balance", see its own paragraph below), OR about the recurring salary CONFIG
+  itself -- "I got a raise, now making $7000", "I changed jobs, new salary is $8000 and CPF is 20% now" --
+  rather than any one logged payment (target_domain="income_config", see its own paragraph below and the
+  CRITICAL distinction from "log_income" there). First decide target_domain from context
   (an amount/currency strongly implies "expense"; food/calories implies "meal"; a workout activity implies
-  "workout"; a to-do title/deadline implies "task"; an appointment/schedule framing implies "event"; the words
-  "balance", "rolled-over", or "deficit" with no specific item being referenced implies "balance" -- when
+  "workout"; a to-do title/deadline implies "task"; an appointment/schedule framing implies "event"; a
+  subscription/recurring-charge name implies "subscription"; a bonus/one-off payment already logged implies
+  "income"; a tax/CPF-top-up already logged implies "deduction"; the words
+  "balance", "rolled-over", or "deficit" with no specific item being referenced implies "balance"; a raise, new
+  job, or salary/pay-day/CPF-rate change with no specific logged payment being referenced implies
+  "income_config" -- when
   genuinely ambiguous between domains, prefer whichever domain has an item matching the description/date, and if
   more than one domain plausibly matches, use "clarification" instead). IMPORTANT exception for edit_date and
   its event-domain equivalent, reschedule (an event's date field is "reschedule", never "edit_date" -- see
@@ -588,6 +709,10 @@ Deciding the intent:
   correction -- see below), and "delete" are supported; for "task" targets, "mark_done", "edit_task" (a
   flexible title/due-date/notes edit -- see below), and "delete" are supported; for "event" targets,
   "reschedule" (move it to a new day -- see target_domain="event"'s own paragraph below) and "delete" are
+  supported; for "subscription" targets, "edit_subscription" (a flexible name/amount/currency/billing-day/
+  category correction -- see below) and "delete" are supported (no "edit_date" -- a subscription has no logged
+  date, just a billing_day, which is part of edit_subscription); for "income" and "deduction" targets,
+  "edit_date", their own flexible "edit_income"/"edit_deduction" correction (see below), and "delete" are
   supported.
 
   CRITICAL: never default to "edit_date" just because it's the first-listed or most familiar action -- only
@@ -686,6 +811,41 @@ Deciding the intent:
   new_vitals_sleep_hours/new_vitals_knee_pain/new_vitals_notes) -- leave the rest null, meaning unchanged; a
   message correcting just the weight sets ONLY new_vitals_weight_kg, not the others. If the message is about
   a check-in but it's unclear what actually changed, use "clarification" and ask what to fix.
+  correction_action="edit_subscription" (target_domain="subscription" only) corrects the subscription's own
+  CONFIG -- a price change, a billing-day move, a rename, a category change -- in place, WITHOUT touching any
+  month that's already auto-posted as a real expense (that's a normal "expense" correction instead, if needed).
+  Examples: "Netflix went up to $17.98" (new_subscription_amount), "move my gym billing to the 5th"
+  (new_subscription_billing_day), "rename that to Netflix Premium" (new_subscription_name). Set ONLY the
+  field(s) the message actually changes; leave the rest null. If the message is about a subscription but it's
+  unclear what actually changed, use "clarification" and ask what to fix.
+  correction_action="edit_income" (target_domain="income" only) corrects an already-logged income entry's
+  source/description/amount/currency in place. Examples: "that bonus was actually $600, not $500"
+  (new_income_amount), "that should be tagged as a bonus, not salary" (new_income_source). new_income_amount is
+  always the corrected NET figure, same discipline as log_income. Set ONLY the field(s) the message actually
+  changes; leave the rest null. If the message is about a logged income entry but it's unclear what actually
+  changed, use "clarification" and ask what to fix.
+  correction_action="edit_deduction" (target_domain="deduction" only) corrects an already-logged deduction's
+  label/amount/currency in place. Examples: "that CPF top-up was $600 not $500" (new_deduction_amount), "that
+  should be labeled as income tax" (new_deduction_label). Set ONLY the field(s) the message actually changes;
+  leave the rest null. If the message is about a logged deduction but it's unclear what actually changed, use
+  "clarification" and ask what to fix.
+  correction_action="edit_income_config" (target_domain="income_config" only) is its own case, like
+  target_domain="balance" above: it has no recent-item list and no target_expense_id to match, because the
+  recurring salary setup is one config row per chat, not a row with an id. Use it when the user is describing a
+  change to what gets auto-posted EVERY future payday -- a raise, a new job, a pay-day move, a changed CPF/stock
+  rate (e.g. "I got a raise, now making $7000", "I changed jobs, new salary is $8000, pay day the 1st, CPF
+  20%"). CRITICAL distinction from "log_income" (an intent, not a correction): "log_income" is for a payment
+  that already landed ONE TIME ("got a $500 bonus today") -- it logs a new row and never touches income_config.
+  "correction"/"edit_income_config" is for a change to the ONGOING recurring setup itself -- it never adds an
+  income row, it only changes what future auto-posts will use. A message like "I got a raise" with a new number
+  is about the ongoing salary, not a one-off payment that landed today, even though both involve the word
+  "got" and a dollar figure -- the test is whether the message is reporting a payment that already arrived
+  (log_income) or describing a change to a standing, repeating arrangement (edit_income_config). Set whichever
+  of new_income_config_gross_amount/new_income_config_currency/new_income_config_pay_day/
+  new_income_config_cpf_rate/new_income_config_stock_rate the message actually implies changing (CPF/stock
+  rates as fractions, e.g. 0.2 for "20%"), and leave the rest null -- a raise with no mention of pay day or
+  rates sets ONLY new_income_config_gross_amount. If the message is clearly about the recurring salary setup
+  but gives no new number at all, use "clarification" and ask what the new gross salary is.
   target_domain="event" supports exactly two actions: "delete" and "reschedule" -- an event has no "done"
   state to set (see events.py's design: it's a flat, dated occurrence, not a to-do), so correction_action is
   NEVER "mark_done" for it. Phrasing like "the X-ray is done", "that appointment already happened", "cancel
@@ -848,7 +1008,8 @@ Deciding the intent:
   amount, a log_meal that's too vague to estimate at all, a correction with an unclear target/domain, or a
   "forget" with an unclear target label. Ask ONE short, specific question.
 
-logged_days_ago rule (log_expense, log_meal, log_workout, log_vitals -- whenever something is being logged
+logged_days_ago rule (log_expense, log_meal, log_workout, log_vitals, log_income, log_deduction -- whenever
+something is being logged
 NOW for something that happened on an EARLIER day, not corrected after the fact): 0 = today/tonight (same as
 leaving it null -- today is the default), 1 = yesterday/last night, 2 = two days ago, etc., up to 14. Set it
 whenever the message itself names or clearly implies a day other than today -- both a RELATIVE phrase
@@ -953,7 +1114,8 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
                    recent_workouts: list | None = None, recent_vitals: list | None = None,
                    recent_tasks: list | None = None, recent_messages: list | None = None,
                    memory_list: list | None = None, recent_events: list | None = None,
-                   recent_lifts: list | None = None) -> dict:
+                   recent_lifts: list | None = None, recent_subscriptions: list | None = None,
+                   recent_income: list | None = None, recent_deductions: list | None = None) -> dict:
     """recent_expenses: list of {id, amount, currency, description, category,
     expense_date, is_claimable} dicts, most recent first -- typically the
     last ~8 for this chat. recent_meals / recent_workouts / recent_vitals:
@@ -982,6 +1144,15 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
     most recent first (see db.get_recent_lifts) -- what a lift correction
     (edit_date/delete) may target; also appended as the LAST parameter, same
     reasoning as recent_events above.
+    recent_subscriptions: list of {id, name, amount, currency, billing_day,
+    category} dicts (see db.get_subscriptions) -- what a subscription
+    correction (edit_subscription/delete) may target. recent_income: list of
+    {id, source, description, net_amount, currency, income_date} dicts, most
+    recent first (see db.get_recent_income) -- what an income correction
+    (edit_date/edit_income/delete) may target. recent_deductions: same idea
+    for deductions (see db.get_recent_deductions). All three appended as the
+    LAST parameters, same "real call-site change, worth paying the one-off
+    test-double update cost" reasoning as recent_events/recent_lifts above.
     Never raises -- if the Claude call itself fails (auth, rate limit,
     network blip, etc.), falls back to a clarification response so the bot
     always replies to the user instead of going silent.
@@ -995,6 +1166,9 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
     memory_list = memory_list or []
     recent_events = recent_events or []
     recent_lifts = recent_lifts or []
+    recent_subscriptions = recent_subscriptions or []
+    recent_income = recent_income or []
+    recent_deductions = recent_deductions or []
     user_content = (
         f"{_today_context()}\n\n"
         f"Recent expenses (most recent first, only reference an id from here for target_domain=expense):\n"
@@ -1011,6 +1185,12 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
         f"{json.dumps(recent_tasks)}\n\n"
         f"Upcoming scheduled events (soonest first, only reference an id from here for target_domain=event):\n"
         f"{json.dumps(recent_events)}\n\n"
+        f"Active subscriptions (only reference an id from here for target_domain=subscription):\n"
+        f"{json.dumps(recent_subscriptions)}\n\n"
+        f"Recent income entries (most recent first, only reference an id from here for target_domain=income):\n"
+        f"{json.dumps(recent_income)}\n\n"
+        f"Recent deductions (most recent first, only reference an id from here for target_domain=deduction):\n"
+        f"{json.dumps(recent_deductions)}\n\n"
         f"Recent conversation history (oldest first):\n"
         f"{json.dumps(recent_messages)}\n\n"
         f"Durable memory (a label, category, and content per item -- only source of remembered facts, only "
@@ -1719,10 +1899,14 @@ references something covered by an existing memory (e.g. mentions a gym by name 
 gym's plan), use that content directly instead of asking the user to repeat it. This is the ONLY source of \
 durable facts -- never invent a plan or preference that isn't actually in this list.
 - A "today_snapshot": real, deterministically-computed numbers for right now -- today's spending balance/ \
-target/streak, and today's meals/workouts/vitals so far (counts, actual items, calorie totals, net calories, \
-the latest weight/sleep/knee-pain reading if logged today). This is here so you can actually converse with \
-real knowledge of how today's going ("you're already over target today, but barely" or "nothing logged yet \
-today, quiet one so far") instead of talking in a vacuum -- use it when it's actually relevant to what they \
+target/streak, today's meals/workouts/vitals so far (counts, actual items, calorie totals, net calories, \
+the latest weight/sleep/knee-pain reading if logged today), and "net_worth" (total income minus deductions \
+minus all-time non-claimable spend -- see db.get_net_worth; a genuinely DIFFERENT number from the daily \
+balance/target above, since that's a discretionary-spending-allowance rollover, not a real money total). \
+This is here so you can actually converse with real knowledge of how today's going ("you're already over \
+target today, but barely" or "nothing logged yet today, quiet one so far") instead of talking in a vacuum, \
+and so a genuine "what's my net worth" / "how much money do I actually have saved up" question gets answered \
+from net_worth's real figures instead of guessed at -- use whichever part is actually relevant to what they \
 said, don't force it into every reply. Every number in it is already correct and final; restate it, never \
 recompute, re-estimate, or "correct" it.
 - "recent_lifts": real logged gym-exercise rows (exercise, location, sets, effort, context_notes, lift_date), \
@@ -1904,6 +2088,9 @@ def _clarify_fallback(message: str) -> dict:
     return {
         "intent": "clarification",
         "expenses": None,
+        "income": None,
+        "deductions": None,
+        "subscriptions": None,
         "meals": None,
         "activity": None,
         "duration_min": None,

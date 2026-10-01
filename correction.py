@@ -32,12 +32,15 @@ import config
 import db
 import fx
 from formatting import (
+    _deduction_line,
     _event_line,
+    _income_line,
     _lift_line,
     _meal_line,
     _memory_line,
     _money,
     _reminder_line,
+    _subscription_line,
     _task_line,
     _vitals_line,
     _workout_line,
@@ -110,6 +113,18 @@ VITALS_DOMAIN_ACTIONS = {"edit_date", "edit_vitals", "delete"}
 # reach instead removes the guess entirely (see ai.py's correction_action
 # rules for the matching CRITICAL warning).
 EVENT_DOMAIN_ACTIONS = {"reschedule", "delete"}
+# subscription has no "edit_date" -- its one date-shaped field is billing_day,
+# which is part of the flexible edit_subscription action (name/amount/
+# currency/billing_day/category can all change in one correction, same
+# "give me the whole picture" shape as edit_task/edit_meal), not a backward-
+# looking days_ago move like a logged entry's date.
+SUBSCRIPTION_DOMAIN_ACTIONS = {"edit_subscription", "delete"}
+# income and deduction entries DO have a real logged date (when the money
+# actually arrived/left), so both get edit_date (backward-looking days_ago,
+# same as expenses/meals/workouts/vitals) alongside their own flexible edit
+# action for the non-date fields.
+INCOME_DOMAIN_ACTIONS = {"edit_date", "edit_income", "delete"}
+DEDUCTION_DOMAIN_ACTIONS = {"edit_date", "edit_deduction", "delete"}
 
 _DOMAIN_OPS = {
     "meal": {"noun": "meal", "recent_cmd": "/recentmeals", "date_field": "meal_date",
@@ -146,6 +161,24 @@ _DOMAIN_OPS = {
                                 "\"X is done\" or \"that already happened\" both just mean remove it)",
                "get": db.get_event, "delete": db.delete_event, "restore": db.restore_deleted_event,
                "line": _event_line, "reschedule": db.edit_event_date},
+    "subscription": {"noun": "subscription", "recent_cmd": "/subscriptions",
+                       "actions": SUBSCRIPTION_DOMAIN_ACTIONS,
+                       "actions_desc": "correcting the name/amount/currency/billing day/category, or deleting one",
+                       "get": db.get_subscription, "delete": db.delete_subscription,
+                       "restore": db.restore_deleted_subscription, "line": _subscription_line,
+                       "edit_subscription": db.edit_subscription},
+    "income": {"noun": "income entry", "recent_cmd": "/recentincome", "date_field": "income_date",
+                "actions": INCOME_DOMAIN_ACTIONS,
+                "actions_desc": "moving the date, correcting the source/description/amount/currency, or "
+                                 "deleting one",
+                "get": db.get_income, "edit_date": db.edit_income_date, "delete": db.delete_income,
+                "restore": db.restore_deleted_income, "line": _income_line, "edit_income": db.edit_income},
+    "deduction": {"noun": "deduction", "recent_cmd": "/recentdeductions", "date_field": "deduction_date",
+                   "actions": DEDUCTION_DOMAIN_ACTIONS,
+                   "actions_desc": "moving the date, correcting the label/amount/currency, or deleting one",
+                   "get": db.get_deduction, "edit_date": db.edit_deduction_date, "delete": db.delete_deduction,
+                   "restore": db.restore_deleted_deduction, "line": _deduction_line,
+                   "edit_deduction": db.edit_deduction},
 }
 
 
@@ -482,6 +515,116 @@ async def _handle_simple_domain_correction(update: Update, context: ContextTypes
         await _reply(update, chat_id, f"Updated -- {ops['line'](updated)}. Reply 'undo' if that's wrong.")
         return
 
+    if action == "edit_subscription":
+        # Corrects a subscription's own config -- a price change, a billing-
+        # day move, a rename -- in place, without a delete-and-re-add round
+        # trip. Deliberately does NOT touch any already-posted expense row
+        # for a past cycle (see db.edit_subscription's docstring); only
+        # future auto-posts pick up the new config. See ai.py's
+        # edit_subscription prompt rules.
+        new_name = parsed.get("new_subscription_name")
+        new_amount = parsed.get("new_subscription_amount")
+        new_currency = parsed.get("new_subscription_currency")
+        new_billing_day = parsed.get("new_subscription_billing_day")
+        new_category = parsed.get("new_subscription_category")
+
+        if all(v is None for v in (new_name, new_amount, new_currency, new_billing_day, new_category)):
+            await _reply(
+                update, chat_id,
+                f"What should I fix about that {noun} -- the name, amount, currency, billing day, or category?"
+            )
+            return
+
+        edits = {}
+        if new_name is not None:
+            edits["new_name"] = new_name
+        if new_amount is not None:
+            edits["new_amount"] = new_amount
+        if new_currency is not None:
+            edits["new_currency"] = new_currency
+        if isinstance(new_billing_day, int) and 1 <= new_billing_day <= 31:
+            edits["new_billing_day"] = new_billing_day
+        if new_category is not None:
+            edits["new_category"] = new_category
+
+        old_name, old_amount, old_currency = row["name"], row["amount"], row["currency"]
+        old_billing_day, old_category = row["billing_day"], row["category"]
+        updated = ops["edit_subscription"](chat_id, target_id, **edits)
+        context.chat_data[LAST_CORRECTION_KEY] = {
+            "domain": domain, "action": "edit_subscription", "expense_id": target_id,
+            "old_name": old_name, "old_amount": old_amount, "old_currency": old_currency,
+            "old_billing_day": old_billing_day, "old_category": old_category,
+        }
+        await _reply(update, chat_id, f"Updated -- {ops['line'](updated)}. Reply 'undo' if that's wrong.")
+        return
+
+    if action == "edit_income":
+        # Corrects a logged income entry's source/description/net amount/
+        # currency in place. See ai.py's edit_income prompt rules -- amount
+        # here is always NET, never gross (same discipline as log_income).
+        new_source = parsed.get("new_income_source")
+        new_description = parsed.get("new_income_description")
+        new_amount = parsed.get("new_income_amount")
+        new_currency = parsed.get("new_income_currency")
+
+        if all(v is None for v in (new_source, new_description, new_amount, new_currency)):
+            await _reply(
+                update, chat_id,
+                f"What should I fix about that {noun} -- the source, description, amount, or currency?"
+            )
+            return
+
+        edits = {}
+        if new_source is not None:
+            edits["new_source"] = new_source
+        if new_description is not None:
+            edits["new_description"] = new_description
+        if new_amount is not None:
+            edits["new_amount"] = new_amount
+        if new_currency is not None:
+            edits["new_currency"] = new_currency
+
+        old_source, old_description = row["source"], row["description"]
+        old_amount, old_currency = row["net_amount"], row["currency"]
+        updated = ops["edit_income"](chat_id, target_id, **edits)
+        context.chat_data[LAST_CORRECTION_KEY] = {
+            "domain": domain, "action": "edit_income", "expense_id": target_id,
+            "old_source": old_source, "old_description": old_description,
+            "old_amount": old_amount, "old_currency": old_currency,
+        }
+        await _reply(update, chat_id, f"Updated -- {ops['line'](updated)}. Reply 'undo' if that's wrong.")
+        return
+
+    if action == "edit_deduction":
+        # Corrects a logged deduction's label/amount/currency in place. See
+        # ai.py's edit_deduction prompt rules.
+        new_label = parsed.get("new_deduction_label")
+        new_amount = parsed.get("new_deduction_amount")
+        new_currency = parsed.get("new_deduction_currency")
+
+        if all(v is None for v in (new_label, new_amount, new_currency)):
+            await _reply(
+                update, chat_id, f"What should I fix about that {noun} -- the label, amount, or currency?"
+            )
+            return
+
+        edits = {}
+        if new_label is not None:
+            edits["new_label"] = new_label
+        if new_amount is not None:
+            edits["new_amount"] = new_amount
+        if new_currency is not None:
+            edits["new_currency"] = new_currency
+
+        old_label, old_amount, old_currency = row["label"], row["amount"], row["currency"]
+        updated = ops["edit_deduction"](chat_id, target_id, **edits)
+        context.chat_data[LAST_CORRECTION_KEY] = {
+            "domain": domain, "action": "edit_deduction", "expense_id": target_id,
+            "old_label": old_label, "old_amount": old_amount, "old_currency": old_currency,
+        }
+        await _reply(update, chat_id, f"Updated -- {ops['line'](updated)}. Reply 'undo' if that's wrong.")
+        return
+
     if action == "mark_done":
         updated = ops["mark_done"](chat_id, target_id)
         context.chat_data[LAST_CORRECTION_KEY] = {
@@ -525,11 +668,75 @@ async def _handle_balance_adjustment(update: Update, context: ContextTypes.DEFAU
     )
 
 
+async def _handle_income_config_adjustment(update: Update, context: ContextTypes.DEFAULT_TYPE, parsed: dict):
+    """"I got a raise" / "I changed jobs, new salary is X, cpf 20%" -- the
+    natural-language path onto db.edit_income_config's partial-update escape
+    hatch. Unlike every other correction here, there's no recent-item list to
+    match against -- income_config is a single per-chat row, not a row with
+    an id -- same shape as _handle_balance_adjustment. Deliberately a
+    SEPARATE intent from log_income: a raise changes what gets auto-posted
+    EVERY future payday, it isn't itself a one-off payment that landed today
+    (see ai.py's log_income vs edit_income_config classification rule for the
+    real, previously-ambiguous distinction)."""
+    chat_id = update.effective_chat.id
+    existing = db.get_income_config(chat_id)
+    if existing is None:
+        await _reply(
+            update, chat_id,
+            "You don't have a salary set up yet -- run /setincome <gross_amount> [currency] <pay_day> "
+            "[cpf_rate%] [stock_rate%] first."
+        )
+        return
+
+    new_gross = parsed.get("new_income_config_gross_amount")
+    new_currency = parsed.get("new_income_config_currency")
+    new_pay_day = parsed.get("new_income_config_pay_day")
+    new_cpf_rate = parsed.get("new_income_config_cpf_rate")
+    new_stock_rate = parsed.get("new_income_config_stock_rate")
+
+    if all(v is None for v in (new_gross, new_currency, new_pay_day, new_cpf_rate, new_stock_rate)):
+        await _reply(
+            update, chat_id,
+            "What's the new gross salary? (You can also mention a new pay day, CPF rate, or stock rate in "
+            "the same message.)"
+        )
+        return
+
+    edits = {}
+    if new_gross is not None:
+        edits["new_gross_amount"] = new_gross
+    if new_currency is not None:
+        edits["new_currency"] = new_currency
+    if isinstance(new_pay_day, int) and 1 <= new_pay_day <= 31:
+        edits["new_pay_day"] = new_pay_day
+    if new_cpf_rate is not None:
+        edits["new_cpf_rate"] = new_cpf_rate
+    if new_stock_rate is not None:
+        edits["new_stock_rate"] = new_stock_rate
+
+    old_gross, old_currency = existing["gross_amount"], existing["currency"]
+    old_pay_day, old_cpf_rate, old_stock_rate = existing["pay_day"], existing["cpf_rate"], existing["stock_rate"]
+    updated = db.edit_income_config(chat_id, **edits)
+    context.chat_data[LAST_CORRECTION_KEY] = {
+        "domain": "income_config", "action": "edit_income_config", "old_gross_amount": old_gross,
+        "old_currency": old_currency, "old_pay_day": old_pay_day, "old_cpf_rate": old_cpf_rate,
+        "old_stock_rate": old_stock_rate,
+    }
+    await _reply(
+        update, chat_id,
+        f"Updated -- gross salary is now {_money(updated['gross_amount'], updated['currency'])}/mo, "
+        f"paid on day {updated['pay_day']}, CPF {updated['cpf_rate']:.0%}, stock {updated['stock_rate']:.0%} "
+        f"(was {_money(old_gross, old_currency)}/mo, day {old_pay_day}, CPF {old_cpf_rate:.0%}, "
+        f"stock {old_stock_rate:.0%}). Reply 'undo' if that's wrong."
+    )
+
+
 async def _handle_correction(update: Update, context: ContextTypes.DEFAULT_TYPE, parsed: dict,
                               recent_ids: set, recent_meal_ids: set = frozenset(),
                               recent_workout_ids: set = frozenset(), recent_vitals_ids: set = frozenset(),
                               recent_task_ids: set = frozenset(), recent_event_ids: set = frozenset(),
-                              recent_lift_ids: set = frozenset()):
+                              recent_lift_ids: set = frozenset(), recent_subscription_ids: set = frozenset(),
+                              recent_income_ids: set = frozenset(), recent_deduction_ids: set = frozenset()):
     """Applies a correction the AI identified against one of the chat's
     recent expenses/meals/workouts/lifts/vitals/tasks/events. Every
     confirmation message here is built from real values just read back from
@@ -562,6 +769,19 @@ async def _handle_correction(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     if domain == "balance":
         await _handle_balance_adjustment(update, context, parsed)
+        return
+
+    if domain == "subscription":
+        await _handle_simple_domain_correction(update, context, parsed, "subscription", recent_subscription_ids)
+        return
+    if domain == "income":
+        await _handle_simple_domain_correction(update, context, parsed, "income", recent_income_ids)
+        return
+    if domain == "deduction":
+        await _handle_simple_domain_correction(update, context, parsed, "deduction", recent_deduction_ids)
+        return
+    if domain == "income_config":
+        await _handle_income_config_adjustment(update, context, parsed)
         return
 
     if target_id not in recent_ids or action not in CORRECTION_ACTIONS:
@@ -712,6 +932,24 @@ async def _revert_last_correction(update: Update, context: ContextTypes.DEFAULT_
         await _reply(update, chat_id, f"Reverted -- balance is back to {_money(snap['old_balance'])}.")
         return True
 
+    if domain == "income_config":
+        # Mirrors "balance" above -- a single per-chat row, not an id'd one,
+        # so there's no _DOMAIN_OPS registry entry to reuse. Always passes
+        # every field back explicitly (same discipline as edit_task/edit_meal
+        # revert below): these are the real prior values, not "leave
+        # untouched" -- db.edit_income_config's _UNSET default is only for
+        # the forward edit, never for undo.
+        row = db.edit_income_config(
+            chat_id, new_gross_amount=snap["old_gross_amount"], new_currency=snap["old_currency"],
+            new_pay_day=snap["old_pay_day"], new_cpf_rate=snap["old_cpf_rate"],
+            new_stock_rate=snap["old_stock_rate"],
+        )
+        await _reply(
+            update, chat_id,
+            f"Reverted -- gross salary is back to {_money(row['gross_amount'], row['currency'])}/mo."
+        )
+        return True
+
     if domain == "reminder":
         # Slash-command-only right now (/donereminder, /removereminder --
         # see reminders.py's module docstring for why), so this is its own
@@ -789,6 +1027,26 @@ async def _revert_last_correction(update: Update, context: ContextTypes.DEFAULT_
                 chat_id, snap["expense_id"], new_weight_kg=snap["old_weight_kg"],
                 new_sleep_hours=snap["old_sleep_hours"], new_knee_pain=snap["old_knee_pain"],
                 new_notes=snap["old_notes"],
+            )
+            await _reply(update, chat_id, f"Reverted -- back to {ops['line'](row)}.")
+        elif action == "edit_subscription":
+            row = ops["edit_subscription"](
+                chat_id, snap["expense_id"], new_name=snap["old_name"], new_amount=snap["old_amount"],
+                new_currency=snap["old_currency"], new_billing_day=snap["old_billing_day"],
+                new_category=snap["old_category"],
+            )
+            await _reply(update, chat_id, f"Reverted -- back to {ops['line'](row)}.")
+        elif action == "edit_income":
+            row = ops["edit_income"](
+                chat_id, snap["expense_id"], new_source=snap["old_source"],
+                new_description=snap["old_description"], new_amount=snap["old_amount"],
+                new_currency=snap["old_currency"],
+            )
+            await _reply(update, chat_id, f"Reverted -- back to {ops['line'](row)}.")
+        elif action == "edit_deduction":
+            row = ops["edit_deduction"](
+                chat_id, snap["expense_id"], new_label=snap["old_label"], new_amount=snap["old_amount"],
+                new_currency=snap["old_currency"],
             )
             await _reply(update, chat_id, f"Reverted -- back to {ops['line'](row)}.")
         return True

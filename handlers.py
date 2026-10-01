@@ -21,6 +21,7 @@ from correction import CORRECTION_UNDO_PHRASES, LAST_CORRECTION_KEY, _handle_cor
 from finance import _balance_text, _recent_text
 from fitness import _force_log_workout_and_reply, _reply_workout_logged
 from formatting import _money, _status_text
+from income import _log_deductions_and_reply, _log_incomes_and_reply
 from lifts import _log_lifts_and_reply, _recent_lifts_for_ai, _recent_lifts_for_narration
 from memory import _memory_for_ai, _memory_text
 from nutrition import _log_meals_and_reply, _target_date_from_days_ago
@@ -28,6 +29,7 @@ from events import _add_events_and_reply, _events_text
 from reminders import _add_reminder_and_reply, _reminders_text
 from replies import PENDING_DUPLICATE_WORKOUT_KEY, PENDING_KEY, _reply, _send_alert_if_needed
 from rundown import TREND_METRICS, _day_stats_payload, _day_stats_reply_text, _rundown_reply_text, _trend_reply_text
+from subscriptions import _log_subscriptions_and_reply
 from tasks import _log_tasks_and_reply, _recent_tasks_for_ai, _tasks_text
 from vitals import _log_vitals_and_reply
 
@@ -87,8 +89,10 @@ async def _casual_reply_text(chat_id: int, message: str, recent_messages: list, 
     ai.answer_casually's docstring for why this is its own dedicated call
     rather than reusing parse_message's casual_reply field. today_snapshot
     reuses the exact same real, deterministically-computed figures day_stats
-    already trusts (db.get_status + rundown._day_stats_payload for today) --
-    one source of "how's today going", not a second copy that could drift.
+    already trusts (db.get_status + rundown._day_stats_payload for today),
+    plus db.get_net_worth (a genuinely separate "real money" total, not the
+    daily spending target/balance) -- one source of "how's today going"/
+    "what's my net worth", not a second copy that could drift.
     recent_lifts (lifts._recent_lifts_for_narration) similarly grounds any
     gym-routine question in real logged rows instead of letting the model
     freely narrate from memory prose -- see ai.answer_casually's docstring
@@ -99,6 +103,7 @@ async def _casual_reply_text(chat_id: int, message: str, recent_messages: list, 
     today_snapshot = {
         "balance": db.get_status(chat_id),
         "today": _day_stats_payload(chat_id, db.today_str()),
+        "net_worth": db.get_net_worth(chat_id),
     }
     recent_lifts = _recent_lifts_for_narration(chat_id)
     try:
@@ -120,6 +125,29 @@ def _recent_events_for_ai(chat_id: int) -> list:
     rows = db.get_upcoming_events(chat_id, limit=20)
     return [{"id": r["id"], "event_title": r["title"], "event_date": r["event_date"],
              "event_time": r["event_time"]} for r in rows]
+
+
+def _recent_subscriptions_for_ai(chat_id: int) -> list:
+    """Active subscriptions, billing-day order -- what a subscription
+    correction (edit_subscription/delete) may target. No date field here
+    (unlike the other recent-* lists) -- a subscription's one date-shaped
+    field is billing_day, already included below."""
+    rows = db.get_subscriptions(chat_id)
+    return [{"id": r["id"], "name": r["name"], "amount": r["amount"], "currency": r["currency"],
+             "billing_day": r["billing_day"], "category": r["category"]} for r in rows]
+
+
+def _recent_income_for_ai(chat_id: int) -> list:
+    rows = db.get_recent_income(chat_id, limit=RECENT_EXPENSES_FOR_AI)
+    return [{"id": r["id"], "source": r["source"], "description": r["description"],
+             "net_amount": r["net_amount"], "currency": r["currency"], "income_date": r["income_date"]}
+            for r in rows]
+
+
+def _recent_deductions_for_ai(chat_id: int) -> list:
+    rows = db.get_recent_deductions(chat_id, limit=RECENT_EXPENSES_FOR_AI)
+    return [{"id": r["id"], "label": r["label"], "amount": r["amount"], "currency": r["currency"],
+             "deduction_date": r["deduction_date"]} for r in rows]
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -177,6 +205,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recent_event_ids = {r["id"] for r in recent_events}
     recent_lifts = _recent_lifts_for_ai(chat_id)
     recent_lift_ids = {r["id"] for r in recent_lifts}
+    recent_subscriptions = _recent_subscriptions_for_ai(chat_id)
+    recent_subscription_ids = {r["id"] for r in recent_subscriptions}
+    recent_income = _recent_income_for_ai(chat_id)
+    recent_income_ids = {r["id"] for r in recent_income}
+    recent_deductions = _recent_deductions_for_ai(chat_id)
+    recent_deduction_ids = {r["id"] for r in recent_deductions}
     # The message just added above is deliberately included here -- the
     # model should see its own current turn as part of the running thread,
     # not just what came before it.
@@ -187,11 +221,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # We asked a clarifying question; treat this message as the answer.
         merged_text = f"{pending['original']}\n(Additional info: {text})"
         parsed = ai.parse_message(merged_text, recent_expenses, recent_meals, recent_workouts, recent_vitals,
-                                   recent_tasks, recent_messages, memory_list, recent_events, recent_lifts)
+                                   recent_tasks, recent_messages, memory_list, recent_events, recent_lifts,
+                                   recent_subscriptions, recent_income, recent_deductions)
     else:
         merged_text = text
         parsed = ai.parse_message(text, recent_expenses, recent_meals, recent_workouts, recent_vitals,
-                                   recent_tasks, recent_messages, memory_list, recent_events, recent_lifts)
+                                   recent_tasks, recent_messages, memory_list, recent_events, recent_lifts,
+                                   recent_subscriptions, recent_income, recent_deductions)
 
     intent = parsed.get("intent")
 
@@ -223,7 +259,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await _handle_correction(update, context, parsed, recent_ids, recent_meal_ids,
                                   recent_workout_ids, recent_vitals_ids, recent_task_ids, recent_event_ids,
-                                  recent_lift_ids)
+                                  recent_lift_ids, recent_subscription_ids, recent_income_ids,
+                                  recent_deduction_ids)
         return
 
     if intent == "show_balance":
@@ -334,6 +371,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.chat_data.pop(PENDING_KEY, None)
         vitals_date = _target_date_from_days_ago(parsed.get("logged_days_ago"))
         await _log_vitals_and_reply(update, chat_id, parsed, vitals_date=vitals_date)
+        return
+
+    if intent == "log_income":
+        context.chat_data.pop(PENDING_KEY, None)
+        income_items = parsed.get("income") or []
+        income_items = [it for it in income_items if it.get("amount") is not None]
+        if not income_items:
+            await _reply(update, chat_id, "I didn't catch an amount -- try e.g. 'got a $500 bonus today'.")
+            return
+        await _log_incomes_and_reply(update, chat_id, income_items)
+        return
+
+    if intent == "log_deduction":
+        context.chat_data.pop(PENDING_KEY, None)
+        deduction_items = parsed.get("deductions") or []
+        deduction_items = [it for it in deduction_items if it.get("amount") is not None]
+        if not deduction_items:
+            await _reply(update, chat_id, "I didn't catch an amount -- try e.g. 'paid $800 income tax today'.")
+            return
+        await _log_deductions_and_reply(update, chat_id, deduction_items)
+        return
+
+    if intent == "log_subscription":
+        context.chat_data.pop(PENDING_KEY, None)
+        subscription_items = parsed.get("subscriptions") or []
+        # Unlike income/deduction, a missing amount isn't the only thing
+        # worth rejecting up front -- a missing name is just as unusable --
+        # but billing_day validation happens inside _log_subscriptions_and_
+        # reply itself (per item, so one bad line in a bulk paste doesn't
+        # sink the whole batch).
+        subscription_items = [it for it in subscription_items if it.get("amount") is not None]
+        if not subscription_items:
+            await _reply(
+                update, chat_id,
+                "I didn't catch a subscription to add -- try e.g. 'Netflix 15.98 on the 25th'."
+            )
+            return
+        await _log_subscriptions_and_reply(update, chat_id, subscription_items)
         return
 
     if intent == "log_task":

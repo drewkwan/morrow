@@ -227,6 +227,62 @@ def init_db() -> None:
                 sent_date TEXT NOT NULL
             )
         """)
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                amount REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT '{config.BASE_CURRENCY}',
+                amount_base REAL NOT NULL,
+                category TEXT,
+                billing_day INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                last_logged_month TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS income_config (
+                chat_id INTEGER PRIMARY KEY,
+                gross_amount REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT '{config.BASE_CURRENCY}',
+                pay_day INTEGER NOT NULL,
+                cpf_rate REAL NOT NULL DEFAULT 0,
+                stock_rate REAL NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                last_logged_month TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS income (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                description TEXT,
+                gross_amount REAL,
+                cpf_amount REAL,
+                stock_amount REAL,
+                net_amount REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT '{config.BASE_CURRENCY}',
+                net_amount_base REAL NOT NULL,
+                income_date TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS deductions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                amount REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT '{config.BASE_CURRENCY}',
+                amount_base REAL NOT NULL,
+                deduction_date TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
         # Forward-compatible migration in case this is an existing db from
         # before currency/streak/alert support was added.
         _add_column_if_missing(conn, "users", "last_alert_date", "last_alert_date TEXT")
@@ -1645,3 +1701,512 @@ def was_insight_sent_recently(chat_id: int, dedup_key: str, within_days: int = 7
             (chat_id, dedup_key, cutoff),
         ).fetchone()
         return row is not None
+
+
+def day_matches_billing_day(day: date, billing_day: int) -> bool:
+    """True if `day` is the effective occurrence of a monthly billing_day
+    (1-31) in day's own month -- clamped to that month's real last day for
+    a billing_day that doesn't exist in every month (e.g. 31 in a 30-day
+    month, or in February), rather than silently skipping those months
+    entirely or rolling over into the next one. Shared by subscriptions.py's
+    and income.py's daily auto-post ticks -- both are "does today match this
+    recurring monthly day" checks, just crediting instead of debiting."""
+    from calendar import monthrange
+    last_day_of_month = monthrange(day.year, day.month)[1]
+    return day.day == min(int(billing_day), last_day_of_month)
+
+
+# ---------- subscriptions ----------
+#
+# Recurring monthly charges (Netflix, gym, etc.) that auto-log THEMSELVES as
+# a real expense on their billing day every month -- see
+# subscriptions.subscriptions_tick for the daily job that drives this. Each
+# subscription row here is pure config (name/amount/currency/billing_day);
+# the actual spend each cycle lands as an ordinary row in `expenses`, so
+# it's visible to /balance, /rundown, /trend, and correctable the exact
+# same way as any other expense -- there's deliberately no special-cased
+# "undo a subscription charge" path here, since editing/deleting that
+# month's auto-logged expense already covers it.
+
+def add_subscription(chat_id: int, name: str, amount: float, currency: str, billing_day: int,
+                      category: str | None = None) -> int:
+    get_or_create_user(chat_id)
+    currency = (currency or config.BASE_CURRENCY).upper()
+    amount_base = fx.to_base(amount, currency)
+    billing_day = max(1, min(31, int(billing_day)))
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO subscriptions (chat_id, name, amount, currency, amount_base, category, billing_day) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, name, amount, currency, amount_base, category, billing_day),
+        )
+        return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def get_subscription(chat_id: int, subscription_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM subscriptions WHERE id = ? AND chat_id = ?", (subscription_id, chat_id)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_subscriptions(chat_id: int, active_only: bool = True) -> list[dict]:
+    """Ordered by billing_day then name -- a predictable, calendar-shaped
+    list rather than insertion order, so /subscriptions reads like a
+    month-at-a-glance rather than a log of when each was added."""
+    query = "SELECT * FROM subscriptions WHERE chat_id = ?"
+    params: list = [chat_id]
+    if active_only:
+        query += " AND active = 1"
+    query += " ORDER BY billing_day, name"
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_subscription(chat_id: int, subscription_id: int) -> dict | None:
+    row = get_subscription(chat_id, subscription_id)
+    if row is None:
+        return None
+    with get_conn() as conn:
+        conn.execute("DELETE FROM subscriptions WHERE id = ? AND chat_id = ?", (subscription_id, chat_id))
+    return row
+
+
+def mark_subscription_logged(subscription_id: int, month_str: str) -> None:
+    """month_str is "YYYY-MM" -- the real guard against double-logging the
+    same subscription twice in one billing cycle (e.g. if the daily tick
+    somehow runs more than once on its billing day, or the bot restarts)."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE subscriptions SET last_logged_month = ? WHERE id = ?", (month_str, subscription_id)
+        )
+
+
+def edit_subscription(chat_id: int, subscription_id: int, new_name=_UNSET, new_amount=_UNSET,
+                       new_currency=_UNSET, new_billing_day=_UNSET, new_category=_UNSET) -> dict | None:
+    """Corrects a subscription's own config (a price change, a billing-day
+    move, a rename) in place -- deliberately NOT the same thing as correcting
+    one month's already-posted charge in `expenses` (see this module's
+    "no special-cased undo a subscription charge" note above, which is still
+    true and still a separate concern). Mirrors edit_meal's _UNSET "only
+    touch what's passed" discipline. last_logged_month is never touched here
+    -- a price or billing-day correction shouldn't retroactively re-trigger
+    (or re-skip) this month's auto-post."""
+    row = get_subscription(chat_id, subscription_id)
+    if row is None:
+        return None
+    final_name = row["name"] if new_name is _UNSET else new_name
+    final_amount = row["amount"] if new_amount is _UNSET else new_amount
+    final_currency = row["currency"] if new_currency is _UNSET else (new_currency or config.BASE_CURRENCY).upper()
+    final_category = row["category"] if new_category is _UNSET else new_category
+    if new_billing_day is _UNSET:
+        final_billing_day = row["billing_day"]
+    else:
+        final_billing_day = max(1, min(31, int(new_billing_day)))
+    # Only re-convert to base currency if the amount or currency actually
+    # changed -- avoids a pointless extra FX lookup on a rename/billing-day-
+    # only edit, and avoids drift from re-converting at a possibly different
+    # exchange rate than when it was first added.
+    if new_amount is _UNSET and new_currency is _UNSET:
+        final_amount_base = row["amount_base"]
+    else:
+        final_amount_base = fx.to_base(final_amount, final_currency)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE subscriptions SET name = ?, amount = ?, currency = ?, amount_base = ?, "
+            "category = ?, billing_day = ? WHERE id = ? AND chat_id = ?",
+            (final_name, final_amount, final_currency, final_amount_base, final_category,
+             final_billing_day, subscription_id, chat_id),
+        )
+    return get_subscription(chat_id, subscription_id)
+
+
+def restore_deleted_subscription(chat_id: int, row: dict) -> dict | None:
+    """Re-inserts a previously deleted subscription row exactly as it was,
+    including its billing_day/active/last_logged_month -- used for one-step
+    'undo' after a natural-language correction deletes the wrong one. Gets a
+    fresh row id, since SQLite won't recycle the old one. Preserving
+    last_logged_month (rather than resetting it to None) matters: undoing an
+    accidental delete made right after this month's auto-post must not make
+    the subscription look un-logged and eligible to double-charge the same
+    cycle on the next tick."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO subscriptions (chat_id, name, amount, currency, amount_base, category, "
+            "billing_day, active, last_logged_month) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, row["name"], row["amount"], row["currency"], row["amount_base"], row["category"],
+             row["billing_day"], row.get("active", 1), row.get("last_logged_month")),
+        )
+        new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    return get_subscription(chat_id, new_id)
+
+
+# ---------- income ----------
+#
+# Deliberately separate from the expense/balance machinery -- see
+# get_net_worth's docstring below for why "how much money do I actually
+# have" is a genuinely different question from the existing daily spending
+# target/streak (`users.balance`), which stays completely untouched by any
+# of this. `income_config` is a single-row-per-chat recurring-salary setup
+# (mirrors `users`' one-row-per-chat shape); `income` is the real ledger --
+# one row per actual payment, whether it auto-posted itself on payday or was
+# logged ad hoc (a bonus, freelance income, an off-schedule salary).
+
+def set_income_config(chat_id: int, gross_amount: float, currency: str, pay_day: int,
+                       cpf_rate: float = 0.0, stock_rate: float = 0.0) -> None:
+    """Upsert -- /setincome always replaces the whole config in one call
+    rather than patching individual fields, since a raise or job change
+    naturally means giving the new gross/pay-day/rates together, not
+    editing one field at a time. last_logged_month is preserved across a
+    re-set (it's simply not touched by this UPDATE) so changing your salary
+    mid-month doesn't risk a double auto-post for the cycle that already
+    ran this month."""
+    get_or_create_user(chat_id)
+    currency = (currency or config.BASE_CURRENCY).upper()
+    pay_day = max(1, min(31, int(pay_day)))
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO income_config (chat_id, gross_amount, currency, pay_day, cpf_rate, stock_rate, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1) "
+            "ON CONFLICT(chat_id) DO UPDATE SET gross_amount = excluded.gross_amount, "
+            "currency = excluded.currency, pay_day = excluded.pay_day, cpf_rate = excluded.cpf_rate, "
+            "stock_rate = excluded.stock_rate, active = 1",
+            (chat_id, gross_amount, currency, pay_day, cpf_rate, stock_rate),
+        )
+
+
+def edit_income_config(chat_id: int, new_gross_amount=_UNSET, new_currency=_UNSET, new_pay_day=_UNSET,
+                        new_cpf_rate=_UNSET, new_stock_rate=_UNSET) -> dict | None:
+    """Partial update for an existing income_config row -- "I got a raise" or
+    "I changed jobs, new pay day is the 1st" should only touch the field(s)
+    actually mentioned, unlike /setincome's full-replace set_income_config
+    (which exists for the explicit initial-setup command, where giving the
+    whole config at once is the natural shape). Without this, a raise
+    reported through natural language with only the new gross amount in hand
+    would have to go through set_income_config and silently zero out the
+    real cpf_rate/stock_rate (its defaults) -- a real, easy-to-hit data-loss
+    bug this sentinel pattern (mirroring edit_meal/edit_task) exists
+    specifically to prevent. Returns None if there's no config yet (the
+    caller should ask the user to run /setincome first instead of silently
+    creating a half-formed one). last_logged_month and active are never
+    touched here, same reasoning as set_income_config."""
+    row = get_income_config(chat_id)
+    if row is None:
+        return None
+    final_gross = row["gross_amount"] if new_gross_amount is _UNSET else new_gross_amount
+    final_currency = row["currency"] if new_currency is _UNSET else (new_currency or config.BASE_CURRENCY).upper()
+    if new_pay_day is _UNSET:
+        final_pay_day = row["pay_day"]
+    else:
+        final_pay_day = max(1, min(31, int(new_pay_day)))
+    final_cpf_rate = row["cpf_rate"] if new_cpf_rate is _UNSET else new_cpf_rate
+    final_stock_rate = row["stock_rate"] if new_stock_rate is _UNSET else new_stock_rate
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE income_config SET gross_amount = ?, currency = ?, pay_day = ?, cpf_rate = ?, "
+            "stock_rate = ? WHERE chat_id = ?",
+            (final_gross, final_currency, final_pay_day, final_cpf_rate, final_stock_rate, chat_id),
+        )
+    return get_income_config(chat_id)
+
+
+def get_income_config(chat_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM income_config WHERE chat_id = ?", (chat_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def clear_income_config(chat_id: int) -> None:
+    """Stops the recurring auto-post entirely (e.g. between jobs) -- deletes
+    the config row rather than just flipping active=0, since there's no
+    history worth keeping on this row (unlike a deleted expense/meal/etc.,
+    which has a restore_deleted_* path) -- running /setincome again starts
+    a fresh config from scratch."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM income_config WHERE chat_id = ?", (chat_id,))
+
+
+def mark_income_config_logged(chat_id: int, month_str: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE income_config SET last_logged_month = ? WHERE chat_id = ?", (month_str, chat_id)
+        )
+
+
+def add_income(chat_id: int, source: str, net_amount: float, currency: str, description: str | None = None,
+               gross_amount: float | None = None, cpf_amount: float | None = None,
+               stock_amount: float | None = None, income_date: str | None = None) -> int:
+    """net_amount is always the real take-home figure -- what actually
+    landed in the bank account -- never the gross; gross_amount/cpf_amount/
+    stock_amount are optional breakdown detail, kept for the record but
+    deliberately NOT what get_total_income sums (see its own docstring)."""
+    get_or_create_user(chat_id)
+    currency = (currency or config.BASE_CURRENCY).upper()
+    net_amount_base = fx.to_base(net_amount, currency)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO income (chat_id, source, description, gross_amount, cpf_amount, stock_amount, "
+            "net_amount, currency, net_amount_base, income_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, source, description, gross_amount, cpf_amount, stock_amount, net_amount, currency,
+             net_amount_base, income_date or today_str()),
+        )
+        return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def get_income(chat_id: int, income_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM income WHERE id = ? AND chat_id = ?", (income_id, chat_id)).fetchone()
+        return dict(row) if row else None
+
+
+def get_recent_income(chat_id: int, limit: int = 10) -> list[dict]:
+    """Ordered by income_date DESC (id DESC only as a same-day tiebreak),
+    NOT id DESC alone -- same real lesson as get_recent_meals/get_recent_
+    workouts/get_recent_vitals (see their docstrings): an auto-posted salary
+    and an ad hoc bonus logged out of date order would otherwise be able to
+    outrank each other incorrectly in "recent"."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM income WHERE chat_id = ? ORDER BY income_date DESC, id DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def edit_income_date(chat_id: int, income_id: int, new_date_str: str) -> dict | None:
+    """Moves an income entry to a different income_date. Like meals/
+    workouts/vitals, income doesn't feed a rolling balance (see this
+    module's own docstring on why net_worth stays separate from `users.
+    balance`), so this is a plain field update -- no balance adjustment
+    needed. Dates after today are clamped to today."""
+    row = get_income(chat_id, income_id)
+    if row is None:
+        return None
+    today = today_str()
+    if new_date_str > today:
+        new_date_str = today
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE income SET income_date = ? WHERE id = ? AND chat_id = ?", (new_date_str, income_id, chat_id)
+        )
+    return get_income(chat_id, income_id)
+
+
+def edit_income(chat_id: int, income_id: int, new_source=_UNSET, new_description=_UNSET,
+                 new_amount=_UNSET, new_currency=_UNSET) -> dict | None:
+    """Corrects a logged income entry's source/description/net amount/
+    currency in place, mirroring edit_meal's _UNSET "only touch what's
+    passed" discipline. new_amount always means the NET (take-home) figure,
+    same as add_income -- never gross. Deliberately doesn't touch gross_
+    amount/cpf_amount/stock_amount: those are auto-posted salary's own
+    breakdown detail, not something a plain-text correction realistically
+    re-derives, and get_total_income never sums them anyway (see add_
+    income's docstring)."""
+    row = get_income(chat_id, income_id)
+    if row is None:
+        return None
+    final_source = row["source"] if new_source is _UNSET else new_source
+    final_description = row["description"] if new_description is _UNSET else new_description
+    final_amount = row["net_amount"] if new_amount is _UNSET else new_amount
+    final_currency = row["currency"] if new_currency is _UNSET else (new_currency or config.BASE_CURRENCY).upper()
+    if new_amount is _UNSET and new_currency is _UNSET:
+        final_amount_base = row["net_amount_base"]
+    else:
+        final_amount_base = fx.to_base(final_amount, final_currency)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE income SET source = ?, description = ?, net_amount = ?, currency = ?, "
+            "net_amount_base = ? WHERE id = ? AND chat_id = ?",
+            (final_source, final_description, final_amount, final_currency, final_amount_base,
+             income_id, chat_id),
+        )
+    return get_income(chat_id, income_id)
+
+
+def delete_income(chat_id: int, income_id: int) -> dict | None:
+    row = get_income(chat_id, income_id)
+    if row is None:
+        return None
+    with get_conn() as conn:
+        conn.execute("DELETE FROM income WHERE id = ? AND chat_id = ?", (income_id, chat_id))
+    return row
+
+
+def restore_deleted_income(chat_id: int, row: dict) -> dict | None:
+    """Re-inserts a previously deleted income row exactly as it was
+    (including the gross/cpf/stock breakdown, if it had one) -- used for
+    one-step 'undo' after a natural-language correction deletes the wrong
+    entry. Gets a fresh row id, every other field preserved."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO income (chat_id, source, description, gross_amount, cpf_amount, stock_amount, "
+            "net_amount, currency, net_amount_base, income_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, row["source"], row["description"], row["gross_amount"], row["cpf_amount"],
+             row["stock_amount"], row["net_amount"], row["currency"], row["net_amount_base"], row["income_date"]),
+        )
+        new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    return get_income(chat_id, new_id)
+
+
+def get_total_income(chat_id: int) -> float:
+    """All-time sum of net_amount_base -- the real take-home total that
+    actually reached the bank account (salary net of CPF/stock, bonuses,
+    other income), in BASE_CURRENCY. Feeds get_net_worth."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(net_amount_base), 0) AS total FROM income WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        return row["total"]
+
+
+# ---------- deductions ----------
+#
+# Money that genuinely left the account but ISN'T a discretionary purchase
+# -- income tax, a voluntary CPF top-up, and similar. Reduces get_net_worth
+# the same way spend does, but is deliberately kept out of `expenses`
+# entirely so it never touches the daily spending target/streak math --
+# see ai.py's "log_deduction" intent docstring for the real distinction
+# from a normal expense.
+
+def add_deduction(chat_id: int, label: str, amount: float, currency: str,
+                   deduction_date: str | None = None) -> int:
+    get_or_create_user(chat_id)
+    currency = (currency or config.BASE_CURRENCY).upper()
+    amount_base = fx.to_base(amount, currency)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO deductions (chat_id, label, amount, currency, amount_base, deduction_date) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, label, amount, currency, amount_base, deduction_date or today_str()),
+        )
+        return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def get_deduction(chat_id: int, deduction_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM deductions WHERE id = ? AND chat_id = ?", (deduction_id, chat_id)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_recent_deductions(chat_id: int, limit: int = 10) -> list[dict]:
+    """Ordered by deduction_date DESC, id DESC -- same date-not-id-order
+    discipline as get_recent_income/get_recent_meals/etc."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM deductions WHERE chat_id = ? ORDER BY deduction_date DESC, id DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def edit_deduction_date(chat_id: int, deduction_id: int, new_date_str: str) -> dict | None:
+    """Moves a deduction to a different deduction_date -- a plain field
+    update, no balance adjustment (deductions already stay out of `users.
+    balance` entirely, see this section's own docstring). Dates after today
+    are clamped to today."""
+    row = get_deduction(chat_id, deduction_id)
+    if row is None:
+        return None
+    today = today_str()
+    if new_date_str > today:
+        new_date_str = today
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE deductions SET deduction_date = ? WHERE id = ? AND chat_id = ?",
+            (new_date_str, deduction_id, chat_id),
+        )
+    return get_deduction(chat_id, deduction_id)
+
+
+def edit_deduction(chat_id: int, deduction_id: int, new_label=_UNSET, new_amount=_UNSET,
+                    new_currency=_UNSET) -> dict | None:
+    """Corrects a logged deduction's label/amount/currency in place, mirroring
+    edit_meal's _UNSET "only touch what's passed" discipline."""
+    row = get_deduction(chat_id, deduction_id)
+    if row is None:
+        return None
+    final_label = row["label"] if new_label is _UNSET else new_label
+    final_amount = row["amount"] if new_amount is _UNSET else new_amount
+    final_currency = row["currency"] if new_currency is _UNSET else (new_currency or config.BASE_CURRENCY).upper()
+    if new_amount is _UNSET and new_currency is _UNSET:
+        final_amount_base = row["amount_base"]
+    else:
+        final_amount_base = fx.to_base(final_amount, final_currency)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE deductions SET label = ?, amount = ?, currency = ?, amount_base = ? "
+            "WHERE id = ? AND chat_id = ?",
+            (final_label, final_amount, final_currency, final_amount_base, deduction_id, chat_id),
+        )
+    return get_deduction(chat_id, deduction_id)
+
+
+def delete_deduction(chat_id: int, deduction_id: int) -> dict | None:
+    row = get_deduction(chat_id, deduction_id)
+    if row is None:
+        return None
+    with get_conn() as conn:
+        conn.execute("DELETE FROM deductions WHERE id = ? AND chat_id = ?", (deduction_id, chat_id))
+    return row
+
+
+def restore_deleted_deduction(chat_id: int, row: dict) -> dict | None:
+    """Re-inserts a previously deleted deduction row exactly as it was --
+    used for one-step 'undo' after a natural-language correction deletes
+    the wrong entry. Gets a fresh row id, every other field preserved."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO deductions (chat_id, label, amount, currency, amount_base, deduction_date) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, row["label"], row["amount"], row["currency"], row["amount_base"], row["deduction_date"]),
+        )
+        new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    return get_deduction(chat_id, new_id)
+
+
+def get_total_deductions(chat_id: int) -> float:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(amount_base), 0) AS total FROM deductions WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        return row["total"]
+
+
+# ---------- net worth ----------
+
+def get_total_spend(chat_id: int) -> float:
+    """All-time non-claimable spend, in BASE_CURRENCY -- reuses
+    get_daily_totals with a start date old enough to predate any real data
+    (same placeholder-start discipline as rundown.TREND_BEGINNING_
+    PLACEHOLDER), rather than writing a second SUM query that could quietly
+    drift from the one /balance and /trend's "spending" metric already
+    trust."""
+    tomorrow = (date.fromisoformat(today_str()) + timedelta(days=1)).isoformat()
+    totals = get_daily_totals(chat_id, "2000-01-01", tomorrow)
+    return sum(totals.values())
+
+
+def get_net_worth(chat_id: int) -> dict:
+    """Real, deterministically-computed money picture: everything that's
+    actually arrived (income) minus everything that's actually left
+    (deductions + non-claimable spend) -- a genuinely different number from
+    the existing daily `balance` (a discretionary-spending-target rollover,
+    not a real money total; see this module's docstring). Deliberately
+    leaves out CLAIMABLE expenses -- money fronted for someone else isn't
+    really spent long-term once reimbursed, and this feature doesn't
+    reconcile against /claimed yet, so folding claimables in here would
+    double-count money that's coming back. A known, documented
+    simplification, not an oversight."""
+    total_income = get_total_income(chat_id)
+    total_deductions = get_total_deductions(chat_id)
+    total_spend = get_total_spend(chat_id)
+    return {
+        "total_income": round(total_income, 2),
+        "total_deductions": round(total_deductions, 2),
+        "total_spend": round(total_spend, 2),
+        "net_worth": round(total_income - total_deductions - total_spend, 2),
+    }

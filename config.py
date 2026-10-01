@@ -73,6 +73,14 @@ BUDGET_ALERT_THRESHOLD = float(os.environ.get("BUDGET_ALERT_THRESHOLD", "0.9"))
 MORNING_BRIEFING_HOUR = int(os.environ.get("MORNING_BRIEFING_HOUR", "7"))
 MORNING_BRIEFING_MINUTE = int(os.environ.get("MORNING_BRIEFING_MINUTE", "30"))
 
+# Local time (in BOT_TIMEZONE) the recurring-finance tick runs -- auto-
+# logging any subscription or recurring salary whose billing/pay day is
+# today (see subscriptions.subscriptions_tick/income.income_tick). Runs
+# BEFORE the morning briefing above, so a same-day auto-post is already in
+# the database by the time that briefing (or /rundown, /morning) reads it.
+RECURRING_FINANCE_HOUR = int(os.environ.get("RECURRING_FINANCE_HOUR", "6"))
+RECURRING_FINANCE_MINUTE = int(os.environ.get("RECURRING_FINANCE_MINUTE", "30"))
+
 # Local time (in BOT_TIMEZONE) the evening "quiet day" nudge checks in --
 # see nudges.py. Deliberately late evening, not late afternoon: the point is
 # to catch a day where genuinely nothing got logged at all, not to nag

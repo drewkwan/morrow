@@ -143,7 +143,8 @@ def test_natural_language_remember_saves_to_db(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "remember", "memory_label": "Bugis gym", "memory_content": "Tue/Thu legs and back",
             "memory_category": "plan", "clarification_question": None, "casual_reply": None,
@@ -164,7 +165,8 @@ def test_natural_language_forget_deletes_from_db(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "forget", "memory_label": "Bugis gym",
             "clarification_question": None, "casual_reply": None,
@@ -184,7 +186,8 @@ def test_undo_reverts_a_forget(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "forget", "memory_label": "Bugis gym",
             "clarification_question": None, "casual_reply": None,
@@ -212,7 +215,8 @@ def test_show_memory_answers_directly_with_real_saved_list(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "show_memory", "clarification_question": None, "casual_reply": None,
             **_no_op_extra_fields(),
@@ -230,7 +234,8 @@ def test_remember_without_label_or_content_asks_instead_of_saving_junk(monkeypat
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "remember", "memory_label": None, "memory_content": None, "memory_category": None,
             "clarification_question": None, "casual_reply": None,
@@ -292,7 +297,8 @@ def test_handle_text_logs_both_sides_of_the_conversation(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "casual", "casual_reply": "Hey, how's it going?",
             "clarification_question": None, **_no_op_extra_fields(),

@@ -129,7 +129,8 @@ def test_natural_language_log_vitals(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None,
                             recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {"intent": "log_vitals", "weight_kg": 76.6, "sleep_hours": 5.5,
                 "knee_pain": 2, "vitals_notes": None,
                 "clarification_question": None, "casual_reply": None}
@@ -212,7 +213,8 @@ def test_natural_language_log_vitals_shows_trend_against_last_checkin(monkeypatc
     def fake_parse_message(text, recent_expenses=None, recent_meals=None,
                             recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {"intent": "log_vitals", "weight_kg": 76.6, "sleep_hours": 7.0,
                 "knee_pain": None, "vitals_notes": None,
                 "clarification_question": None, "casual_reply": None}
@@ -234,7 +236,8 @@ def test_natural_language_log_vitals_backdates_with_logged_days_ago(monkeypatch)
     def fake_parse_message(text, recent_expenses=None, recent_meals=None,
                             recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {"intent": "log_vitals", "weight_kg": 76.6, "sleep_hours": None,
                 "knee_pain": None, "vitals_notes": None, "logged_days_ago": 1,
                 "clarification_question": None, "casual_reply": None}
@@ -273,7 +276,8 @@ def test_correction_can_target_vitals_by_domain(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None,
                             recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "vitals", "target_expense_id": vitals_id,
             "correction_action": "delete", "days_ago": None,
@@ -294,7 +298,8 @@ def test_undo_reverts_a_vitals_deletion(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None,
                             recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "vitals", "target_expense_id": vitals_id,
             "correction_action": "delete", "days_ago": None,
@@ -323,7 +328,8 @@ def test_undo_reverts_a_vitals_date_edit(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None,
                             recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "vitals", "target_expense_id": vitals_id,
             "correction_action": "edit_date", "days_ago": 1,
@@ -353,7 +359,8 @@ def test_correction_can_edit_vitals_weight_and_undo(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "vitals", "target_expense_id": vitals_id,
             "correction_action": "edit_vitals", "new_vitals_weight_kg": 76.0,
@@ -378,7 +385,8 @@ def test_correction_edit_vitals_with_nothing_set_asks_what_to_fix(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "vitals", "target_expense_id": vitals_id,
             "correction_action": "edit_vitals",

@@ -44,6 +44,19 @@ from events import addevent_cmd, events_cmd, removeevent_cmd, rescheduleevent_cm
 from fitness import logworkout_cmd, recentworkouts
 from formatting import _money, _status_text
 from handlers import handle_text, on_error
+from income import (
+    addincome_cmd,
+    adddeduction_cmd,
+    clearincome_cmd,
+    incomeconfig_cmd,
+    income_tick,
+    networth_cmd,
+    recentdeductions_cmd,
+    recentincome_cmd,
+    removededuction_cmd,
+    removeincome_cmd,
+    setincome_cmd,
+)
 from lifts import loglift_cmd, recentlifts
 from memory import forget_cmd, memory_cmd
 from morning import morning_briefing_tick, morning_cmd
@@ -51,6 +64,7 @@ from nudges import evening_nudge_tick
 from nutrition import handle_photo, logmeal_cmd, recentmeals
 from reminders import addreminder_cmd, donereminder_cmd, reminders_cmd, removereminder_cmd
 from rundown import daystats_cmd, rundown_cmd, trend_cmd
+from subscriptions import addsubscription_cmd, removesubscription_cmd, subscriptions_cmd, subscriptions_tick
 from summary import summary
 from tasks import addtask_cmd, done_cmd, tasks_cmd
 from vitals import logvitals_cmd, recentvitals
@@ -125,6 +139,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "How one metric has progressed over time: /trend <weight|sleep|knee_pain|calories_in|"
         "calories_out|spending> [N days|all]\n"
         "See today's briefing (today's budget + due to-dos + a look back at yesterday) any time: /morning\n\n"
+        "Add a recurring subscription (auto-logs as an expense every month): /addsubscription Netflix "
+        "15.98 25\n"
+        "See active subscriptions: /subscriptions\n"
+        "Stop one auto-logging: /removesubscription <id>\n\n"
+        "Set up recurring salary (auto-posts on payday): /setincome 6000 25 20% 5%\n"
+        "View the current salary setup: /incomeconfig -- stop it: /clearincome\n"
+        "Log a one-off bonus/income by hand: /addincome 500 freelance gig, or just tell me naturally\n"
+        "See recent income: /recentincome -- remove one: /removeincome <id>\n"
+        "Log a tax/CPF deduction (doesn't count toward your daily spending target): /adddeduction 800 "
+        "income tax, or just tell me naturally\n"
+        "See recent deductions: /recentdeductions -- remove one: /removededuction <id>\n"
+        "See your real money picture (income minus deductions minus spend, separate from the daily "
+        "target/balance above): /networth\n\n"
         "Or just tell me naturally, e.g. \"spent 15 on uber\", \"had a mango\", \"played tennis for an hour\", "
         "\"weight 76.6, slept 5.5 hours\", \"remember I go to Fitness First Bugis Tue/Thu\", \"remind me to call "
         "the dentist tomorrow\", \"dinner with Mel next Monday\", or \"how am I doing this week\" -- and just "
@@ -209,12 +236,30 @@ def main():
     app.add_handler(CommandHandler("rescheduleevent", rescheduleevent_cmd))
     app.add_handler(CommandHandler("removeevent", removeevent_cmd))
     app.add_handler(CommandHandler("morning", morning_cmd))
+    app.add_handler(CommandHandler("addsubscription", addsubscription_cmd))
+    app.add_handler(CommandHandler("subscriptions", subscriptions_cmd))
+    app.add_handler(CommandHandler("removesubscription", removesubscription_cmd))
+    app.add_handler(CommandHandler("setincome", setincome_cmd))
+    app.add_handler(CommandHandler("incomeconfig", incomeconfig_cmd))
+    app.add_handler(CommandHandler("clearincome", clearincome_cmd))
+    app.add_handler(CommandHandler("addincome", addincome_cmd))
+    app.add_handler(CommandHandler("recentincome", recentincome_cmd))
+    app.add_handler(CommandHandler("removeincome", removeincome_cmd))
+    app.add_handler(CommandHandler("adddeduction", adddeduction_cmd))
+    app.add_handler(CommandHandler("recentdeductions", recentdeductions_cmd))
+    app.add_handler(CommandHandler("removededuction", removededuction_cmd))
+    app.add_handler(CommandHandler("networth", networth_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
 
     if app.job_queue is not None:
         app.job_queue.run_repeating(rollover_tick, interval=3600, first=10)
+        finance_time = datetime.time(
+            config.RECURRING_FINANCE_HOUR, config.RECURRING_FINANCE_MINUTE, tzinfo=ZoneInfo(config.BOT_TIMEZONE)
+        )
+        app.job_queue.run_daily(subscriptions_tick, time=finance_time)
+        app.job_queue.run_daily(income_tick, time=finance_time)
         briefing_time = datetime.time(
             config.MORNING_BRIEFING_HOUR, config.MORNING_BRIEFING_MINUTE, tzinfo=ZoneInfo(config.BOT_TIMEZONE)
         )

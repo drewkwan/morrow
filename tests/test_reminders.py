@@ -171,7 +171,8 @@ def test_natural_language_add_reminder(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "add_reminder", "reminder_description": "take hair pills",
             "clarification_question": None, "casual_reply": None,
@@ -189,7 +190,8 @@ def test_natural_language_add_reminder_without_a_description_asks_instead_of_gue
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "add_reminder", "reminder_description": None,
             "clarification_question": None, "casual_reply": None,
@@ -208,7 +210,8 @@ def test_natural_language_show_reminders(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "show_reminders",
             "clarification_question": None, "casual_reply": None,

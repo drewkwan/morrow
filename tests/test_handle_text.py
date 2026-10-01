@@ -87,7 +87,8 @@ def test_multi_round_clarification_accumulates_context_instead_of_overwriting(mo
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         captured_texts.append(text)
         return next(responses)
 
@@ -126,7 +127,8 @@ def test_multiple_expenses_in_one_message_are_all_logged(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "log_expense",
             "expenses": [
@@ -160,7 +162,8 @@ def test_natural_language_log_expense_backdates_with_logged_days_ago(monkeypatch
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "log_expense",
             "expenses": [{"amount": 12, "currency": None, "description": "lunch", "category": "Food",
@@ -195,7 +198,8 @@ def test_single_expense_reply_wording_unchanged(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "log_expense",
             "expenses": [{"amount": 12.5, "currency": None, "description": "lunch",
@@ -230,7 +234,8 @@ def test_show_balance_answers_directly_with_real_numbers(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {"intent": "show_balance", "clarification_question": None, "casual_reply": None,
                 **_no_op_extra_fields()}
 
@@ -249,7 +254,8 @@ def test_show_recent_answers_directly_with_real_data(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {"intent": "show_recent", "clarification_question": None, "casual_reply": None,
                 **_no_op_extra_fields()}
 
@@ -280,7 +286,8 @@ def test_correction_can_target_by_date_reference_alone(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_expense_id": target["id"], "correction_action": "edit_date",
             "days_ago": 2, "clarification_question": None, "casual_reply": None,
@@ -320,7 +327,8 @@ def test_correction_can_manually_adjust_rolled_over_balance(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "balance", "target_expense_id": None,
             "correction_action": "adjust_balance", "new_amount": -1135.89, "days_ago": None,
@@ -340,7 +348,8 @@ def test_balance_adjustment_without_an_amount_asks_for_one(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "balance", "target_expense_id": None,
             "correction_action": "adjust_balance", "new_amount": None, "days_ago": None,
@@ -360,7 +369,8 @@ def test_undo_reverts_a_balance_adjustment(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "balance", "target_expense_id": None,
             "correction_action": "adjust_balance", "new_amount": -1135.89, "days_ago": None,
@@ -407,7 +417,8 @@ def test_correction_can_mark_a_task_done_by_bare_number_reference(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
             "correction_action": "mark_done", "days_ago": None,
@@ -434,7 +445,8 @@ def test_correction_can_reschedule_a_task_due_date(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id, due_in_days=1)
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -454,7 +466,8 @@ def test_correction_can_edit_a_task_title(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id, new_description="call the vet")
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -475,7 +488,8 @@ def test_correction_can_reschedule_and_add_a_note_in_one_edit(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id, due_in_days=1, new_task_notes="need Shardul's address")
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -495,7 +509,8 @@ def test_edit_task_with_no_field_specified_asks_what_to_change(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id)
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -513,7 +528,8 @@ def test_undo_reverts_a_task_reschedule(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id, due_in_days=3)
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -541,7 +557,8 @@ def test_correction_can_remove_a_task_due_date(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id, remove_due_date=True)
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -561,7 +578,8 @@ def test_undo_reverts_a_task_due_date_removal(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id, remove_due_date=True)
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -588,7 +606,8 @@ def test_undo_reschedule_clears_due_date_back_to_none_if_it_was_never_set(monkey
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _edit_task_response(task_id, due_in_days=2)
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -650,7 +669,8 @@ def test_casual_intent_uses_the_dedicated_answer_casually_call(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _casual_parse_response(casual_reply="fallback text, should not be used")
 
     captured = {}
@@ -685,7 +705,8 @@ def test_casual_reply_is_not_narrated_a_second_time(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _casual_parse_response(casual_reply="fallback text, should not be used")
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -705,7 +726,8 @@ def test_casual_intent_falls_back_to_parsed_casual_reply_if_dedicated_call_fails
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return _casual_parse_response(casual_reply="Hey! (fallback)")
 
     def fake_answer_casually(message, recent_messages, memory_list, today_snapshot, recent_lifts=None):
@@ -729,7 +751,8 @@ def test_genuinely_unmatched_intent_gets_generic_command_menu_not_casual_call(mo
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
-                            recent_lifts=None):
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {"intent": "something_unrecognized", "clarification_question": None, "casual_reply": None,
                 **_no_op_extra_fields()}
 

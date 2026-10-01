@@ -121,6 +121,40 @@ def _event_line(row: dict) -> str:
     return f"#{row['id']} {row['title']} (scheduled {when}){notes}"
 
 
+def _subscription_line(row: dict) -> str:
+    category_tag = f" [{row['category']}]" if row.get("category") else ""
+    return (f"#{row['id']} {row['name']} -- {_money(row['amount'], row.get('currency'))}/mo "
+            f"on the {row['billing_day']}{category_tag}")
+
+
+def _income_line(row: dict) -> str:
+    desc_tag = f" -- {row['description']}" if row.get("description") else ""
+    breakdown_bits = []
+    if row.get("gross_amount") is not None:
+        breakdown_bits.append(f"gross {_money(row['gross_amount'], row.get('currency'))}")
+    if row.get("cpf_amount") is not None:
+        breakdown_bits.append(f"CPF {_money(row['cpf_amount'], row.get('currency'))}")
+    if row.get("stock_amount") is not None:
+        breakdown_bits.append(f"stock {_money(row['stock_amount'], row.get('currency'))}")
+    breakdown = f" ({', '.join(breakdown_bits)})" if breakdown_bits else ""
+    return (f"#{row['id']} {row['source']}: {_money(row['net_amount'], row.get('currency'))} net"
+            f"{breakdown}{desc_tag} ({row['income_date']})")
+
+
+def _deduction_line(row: dict) -> str:
+    return f"#{row['id']} {row['label']} -- {_money(row['amount'], row.get('currency'))} ({row['deduction_date']})"
+
+
+def _net_worth_text(net_worth: dict) -> str:
+    lines = [
+        f"Total income: {_money(net_worth['total_income'])}",
+        f"Total deductions: {_money(net_worth['total_deductions'])}",
+        f"Total spend: {_money(net_worth['total_spend'])}",
+        f"Net worth: {_money(net_worth['net_worth'])}",
+    ]
+    return "\n".join(lines)
+
+
 def _memory_line(row: dict) -> str:
     cat = f" [{row['category']}]" if row.get("category") else ""
     return f"{row['label']}{cat}: {row['content']}"

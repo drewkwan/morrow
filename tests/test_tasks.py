@@ -152,7 +152,8 @@ def test_natural_language_log_task_computes_due_date_deterministically(monkeypat
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "log_task",
             "tasks": [{"title": "call the dentist", "due_in_days": 1, "due_time": None, "notes": None}],
@@ -173,7 +174,8 @@ def test_natural_language_log_task_with_no_due_date_leaves_due_at_null(monkeypat
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "log_task",
             "tasks": [{"title": "buy milk", "due_in_days": None, "due_time": None, "notes": None}],
@@ -213,7 +215,8 @@ def test_natural_language_log_task_with_many_todos_logs_every_one(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "log_task",
             "tasks": [{"title": t, "due_in_days": None, "due_time": None, "notes": None} for t in titles],
@@ -252,7 +255,8 @@ def test_natural_language_show_tasks_lists_open_todos(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {"intent": "show_tasks", "clarification_question": None, "casual_reply": None}
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -282,7 +286,8 @@ def test_correction_can_mark_a_task_done_by_domain(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
             "correction_action": "mark_done", "days_ago": None,
@@ -302,7 +307,8 @@ def test_correction_can_delete_a_task_by_domain(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
             "correction_action": "delete", "days_ago": None,
@@ -327,7 +333,8 @@ def test_task_correction_rejects_unsupported_edit_date_action(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
             "correction_action": "edit_date", "days_ago": 1,
@@ -357,7 +364,8 @@ def test_undo_reverts_a_task_mark_done(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
             "correction_action": "mark_done", "days_ago": None,
@@ -381,7 +389,8 @@ def test_undo_reverts_a_task_deletion(monkeypatch):
 
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
-                            recent_events=None, recent_lifts=None):
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None):
         return {
             "intent": "correction", "target_domain": "task", "target_expense_id": task_id,
             "correction_action": "delete", "days_ago": None,

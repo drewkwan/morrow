@@ -338,6 +338,70 @@ def init_db() -> None:
         # treat such a row as due on its next run, rather than leaving a
         # NULL in a column every subscriptions query now expects to be set.
         conn.execute("UPDATE subscriptions SET next_renewal_date = ? WHERE next_renewal_date IS NULL", (today_str(),))
+        # The six ALTER TABLE calls above add every NEW column, but they
+        # can't touch the OLD ones -- and billing_day, in particular, is
+        # NOT NULL with no DEFAULT in the original schema. add_subscription
+        # (rightly) never sets it, so every insert through the new code
+        # against a leftover production table violated that constraint
+        # outright: a second real production incident,
+        # "sqlite3.IntegrityError: NOT NULL constraint failed:
+        # subscriptions.billing_day". SQLite has no "drop this constraint"
+        # statement, so the only way to actually get rid of it is to rebuild
+        # the table -- safe to call on every startup, since it's a no-op
+        # once billing_day is already gone.
+        _drop_subscriptions_legacy_columns(conn)
+
+
+def _drop_subscriptions_legacy_columns(conn: sqlite3.Connection) -> None:
+    """Rebuilds `subscriptions` via the standard SQLite rename/create/copy/
+    drop sequence to actually get rid of the old billing_day/
+    last_logged_month columns -- an ALTER TABLE ADD COLUMN can backfill a
+    new column, but there's no ALTER TABLE statement that can relax or drop
+    an existing NOT NULL constraint, which is what billing_day needs. Runs
+    on every startup; a table that's already clean (never had billing_day,
+    or had it dropped by a previous run) is left untouched."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+    if "billing_day" not in cols:
+        return
+    conn.execute("ALTER TABLE subscriptions RENAME TO subscriptions_pre_frequency_schema")
+    conn.execute(f"""
+        CREATE TABLE subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT '{config.BASE_CURRENCY}',
+            amount_base REAL NOT NULL,
+            category TEXT,
+            frequency TEXT NOT NULL DEFAULT 'monthly',
+            next_renewal_date TEXT NOT NULL,
+            card TEXT,
+            notes TEXT,
+            is_claimable INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            last_logged_date TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    # frequency/next_renewal_date/is_claimable are already guaranteed non-NULL
+    # on every row by the ALTER+backfill steps above, which always run first
+    # -- the COALESCE calls here are just a defensive second line, not load-
+    # bearing.
+    conn.execute(f"""
+        INSERT INTO subscriptions (
+            id, chat_id, name, amount, currency, amount_base, category,
+            frequency, next_renewal_date, card, notes, is_claimable, active,
+            last_logged_date, created_at
+        )
+        SELECT
+            id, chat_id, name, amount, currency, amount_base, category,
+            COALESCE(frequency, 'monthly'),
+            COALESCE(next_renewal_date, '{today_str()}'),
+            card, notes, COALESCE(is_claimable, 0), active,
+            last_logged_date, created_at
+        FROM subscriptions_pre_frequency_schema
+    """)
+    conn.execute("DROP TABLE subscriptions_pre_frequency_schema")
 
 
 def _now_local_date() -> date:

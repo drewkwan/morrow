@@ -518,17 +518,29 @@ def test_init_db_migrates_an_existing_tasks_table_to_add_recurrence_frequency():
 
 
 def test_init_db_migrates_an_existing_subscriptions_table_to_the_new_schema():
-    """Regression guard for a second real production incident, same root
-    cause as the tasks one above: the subscriptions schema redesign
-    (billing_day/last_logged_month -> frequency/next_renewal_date/card/
-    notes/is_claimable/last_logged_date) was built on the wrong assumption
-    that no subscriptions table existed in production yet -- it did, from
-    an earlier push, in the OLD shape. CREATE TABLE IF NOT EXISTS silently
-    left it there, and every new subscriptions function broke with
-    'sqlite3.OperationalError: no such column: next_renewal_date' against
-    the live database. Simulates that old-shape table directly (with a
-    pre-existing row, the way production actually had it), re-runs
-    init_db(), and checks every new column is both present and usable."""
+    """Regression guard for TWO real, sequential production incidents, both
+    the same root cause as the tasks one above -- the subscriptions schema
+    redesign (billing_day/last_logged_month -> frequency/next_renewal_date/
+    card/notes/is_claimable/last_logged_date) was built on the wrong
+    assumption that no subscriptions table existed in production yet. It
+    did, from an earlier push, in the OLD shape, and CREATE TABLE IF NOT
+    EXISTS silently left it there:
+
+    1. Every new subscriptions function broke with 'sqlite3.OperationalError:
+       no such column: next_renewal_date' -- fixed by the six
+       _add_column_if_missing calls above.
+    2. That fix alone wasn't enough: billing_day in the REAL production
+       table is NOT NULL with no DEFAULT (an earlier version of this test
+       wrongly assumed it was nullable, which is exactly why it didn't catch
+       this), and add_subscription never sets it, so every insert still
+       broke -- this time with 'sqlite3.IntegrityError: NOT NULL constraint
+       failed: subscriptions.billing_day'. Fixed by
+       _drop_subscriptions_legacy_columns actually rebuilding the table.
+
+    Simulates that old-shape table directly, with billing_day NOT NULL and a
+    pre-existing row (the way production actually had it), re-runs
+    init_db(), and checks every new column is present and usable AND that
+    billing_day/last_logged_month are actually gone, not just worked around."""
     with db.get_conn() as conn:
         conn.execute("DROP TABLE subscriptions")
         conn.execute(f"""
@@ -540,7 +552,7 @@ def test_init_db_migrates_an_existing_subscriptions_table_to_the_new_schema():
                 currency TEXT NOT NULL DEFAULT '{db.config.BASE_CURRENCY}',
                 amount_base REAL NOT NULL,
                 category TEXT,
-                billing_day INTEGER,
+                billing_day INTEGER NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1,
                 last_logged_month TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -561,6 +573,21 @@ def test_init_db_migrates_an_existing_subscriptions_table_to_the_new_schema():
     assert row["next_renewal_date"] == db.today_str()  # backfilled placeholder, never left NULL
     assert row["card"] is None
     assert row["last_logged_date"] is None
-    # And every new column is actually usable going forward, not just present.
+    assert set(row.keys()) >= {
+        "id", "chat_id", "name", "amount", "currency", "amount_base", "category",
+        "frequency", "next_renewal_date", "card", "notes", "is_claimable",
+        "active", "last_logged_date", "created_at",
+    }
+    assert "billing_day" not in row.keys()  # the whole point: actually gone, not just unused
+    assert "last_logged_month" not in row.keys()
+
+    # init_db() must also be idempotent: running it again against the
+    # now-clean table (no billing_day left to find) must not error.
+    db.init_db()
+
+    # And every new column is actually usable going forward, not just
+    # present -- this INSERT is exactly what crashed with "NOT NULL
+    # constraint failed: subscriptions.billing_day" before the fix, since
+    # add_subscription never supplies that column.
     sub_id = db.add_subscription(CHAT, "new sub", 9.99, "SGD", "quarterly", "2027-01-01", card="OCBC")
     assert db.get_subscription(CHAT, sub_id)["card"] == "OCBC"

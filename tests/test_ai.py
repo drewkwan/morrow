@@ -14,6 +14,16 @@ import pytest
 import ai
 import db
 
+# Captured at import time, BEFORE any test's autouse conftest.py fixture
+# (_passthrough_narration) gets a chance to monkeypatch the ai.narrate_reply
+# ATTRIBUTE to a pure passthrough lambda for the rest of this test suite --
+# monkeypatch only ever reassigns that attribute, never mutates the function
+# object itself, so this reference stays the real implementation throughout.
+# Needed because these are the one place in the suite that tests
+# narrate_reply's OWN internals (its prompt, its API call shape) rather than
+# treating it as an opaque dependency the way every other test file does.
+_REAL_NARRATE_REPLY = ai.narrate_reply
+
 
 class _FakeContentBlock:
     def __init__(self, text):
@@ -721,3 +731,51 @@ def test_answer_casually_includes_month_to_date_in_the_prompt(monkeypatch):
     ai.answer_casually("what's my total spend this month?", [], [], today_snapshot)
     sent = fake.calls[0]["messages"][0]["content"]
     assert "420.69" in sent
+
+
+# ---------- narrate_reply: restyle only, never invent ----------
+#
+# Regression guards for a real, confirmed production bug: a message that
+# mixed a weight check-in with a food mention ("Check in 75.3 kg this
+# morning, breakfast was half a kaya toast and iced latte home made") only
+# ever logged the vitals check-in (log_vitals is a single intent -- the food
+# mention never reached db.add_meal). The deterministic reply handed to
+# narrate_reply correctly said only "Logged: #85 75.3kg (2026-10-01)" -- but
+# narrate_reply, seeing the user's own breakfast mention in recent_messages,
+# fabricated an entire extra paragraph confirming a fake meal log with an
+# invented calorie estimate AND an invented "Today's running total: ~415
+# kcal", none of which was ever real (no meal row was ever inserted). Andrew
+# only discovered this hours later when the real, deterministic daily total
+# didn't match what he'd been told. See NARRATE_REPLY_SYSTEM_PROMPT's rule 4
+# for the fix -- an explicit prohibition using this exact incident.
+
+def test_narrate_reply_system_prompt_forbids_inventing_an_unlogged_item():
+    prompt = ai.NARRATE_REPLY_SYSTEM_PROMPT
+    assert "Do NOT fill that gap" in prompt
+    assert "Today's running total: ~415 kcal" in prompt  # the real fabricated number, pinned as a negative example
+
+
+def test_narrate_reply_sends_the_deterministic_text_and_context(monkeypatch):
+    fake = _mock_recording_client(monkeypatch, "Logged -- #85 75.3kg, nice drop since last time.")
+    today_snapshot = {"balance": {"balance": 10.0}, "today": {}}
+    reply = _REAL_NARRATE_REPLY(
+        "Logged: #85 75.3kg (2026-10-01)", recent_messages=[{"role": "user", "content": "75.3kg this morning"}],
+        memory_list=[], today_snapshot=today_snapshot, recent_lifts=[],
+    )
+    assert reply == "Logged -- #85 75.3kg, nice drop since last time."
+    assert fake.calls[0]["model"] == ai.config.CLAUDE_NARRATION_MODEL
+    sent = fake.calls[0]["messages"][0]["content"]
+    assert "Logged: #85 75.3kg (2026-10-01)" in sent
+    assert "75.3kg this morning" in sent
+
+
+def test_narrate_reply_never_raises_on_api_failure(monkeypatch):
+    """replies._narrate_text is what actually catches this (narrate_reply
+    itself has no try/except -- see its own docstring: the caller falls
+    back to the deterministic text unchanged), but this pins that
+    narrate_reply's real signature/behavior on failure is "raises", not
+    "swallows", so a future refactor can't quietly change which layer is
+    responsible for the fallback without a test noticing."""
+    _mock_client(monkeypatch, RuntimeError("API down"))
+    with pytest.raises(RuntimeError):
+        _REAL_NARRATE_REPLY("Logged: #85 75.3kg (2026-10-01)")

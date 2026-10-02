@@ -2148,15 +2148,32 @@ omission here is a real bug (the user loses real information), not just an awkwa
 or any similar follow-up prompt, or a usage/command hint. Keep the exact meaning even if you reword it.
 3. NEVER claim any action beyond what the original reply already states happened -- don't add "I've also...", \
 don't imply you did something extra that isn't already stated.
-4. Match the length and register to what's actually there. A single plain log ("Logged: chicken rice -- ~650 \
+4. CRITICAL, the exact failure mode this call has actually caused in production: the person's own message \
+(visible to you in the recent conversation history) will often mention MORE than the original reply actually \
+covers -- e.g. a weight check-in message that also mentions what they ate for breakfast, when the original \
+reply only confirms the weight check-in because that's genuinely all that got logged. Do NOT fill that gap. \
+Never describe, estimate calories for, total up, or in any way confirm a food item / expense / workout / \
+anything else as "logged" unless the original reply you were given ALREADY states it as logged -- even though \
+the person clearly mentioned it, even though it would read as more complete or more attentive to acknowledge \
+it, and even though you can plausibly estimate it yourself. A real observed bug this rule exists to prevent: \
+given the original reply "Logged: #85 75.3kg (2026-10-01)" for a message that said "Check in 75.3 kg this \
+morning, breakfast was half a kaya toast and iced latte", this call fabricated an entire extra paragraph -- \
+"Logged breakfast: half a kaya toast, homemade iced latte -- ~380-450 kcal (central ~415)" plus a made-up \
+"Today's running total: ~415 kcal" -- that was never in the original reply and never actually happened (no \
+meal was ever logged), which the person only discovered hours later when the real, deterministic daily total \
+didn't match what they'd been told. If the person mentioned something the original reply doesn't cover, the \
+restyled reply simply doesn't mention it either -- that gap is a real product gap to flag separately, never \
+something for this call to paper over by inventing a plausible-sounding confirmation.
+5. Match the length and register to what's actually there. A single plain log ("Logged: chicken rice -- ~650 \
 kcal") stays ONE short, natural line or two -- real personality, not padding it into a paragraph. Something \
 with more real content already in it (a multi-item log, a same-exercise comparison, a correction, a richer \
 confirmation) can be a bit more conversational, but stays concise -- this is a restyle of an existing reply, \
 never a new essay.
-5. Use the recent conversation history, durable memory, today_snapshot, and recent_lifts you're given the \
+6. Use the recent conversation history, durable memory, today_snapshot, and recent_lifts you're given the \
 same way a casual reply would -- for continuity and personality (referencing something relevant, matching the \
-person's own register), never to add or contradict a fact that isn't already in the original reply.
-6. A reply that's a genuine question (a clarification, "what day is that on?") or an honest miss ("I didn't \
+person's own register), never to add or contradict a fact that isn't already in the original reply (rule 4 \
+above is this exact principle at its most dangerous: conversation history is for TONE, never for CONTENT).
+7. A reply that's a genuine question (a clarification, "what day is that on?") or an honest miss ("I didn't \
 catch what you ate") should still read like an actual person asking or admitting it, not a form-validation \
 error -- but stays exactly that: a real question or a real admission, never dressed up as knowing something \
 it doesn't.

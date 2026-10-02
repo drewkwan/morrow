@@ -40,8 +40,17 @@ def _vitals_trend_text(chat_id: int, row: dict) -> str | None:
     return None
 
 
-async def _log_vitals_and_reply(update: Update, chat_id: int, data: dict, vitals_date: str | None = None):
-    """vitals_date lets the natural-language log_vitals intent backdate a
+async def _log_vitals_fragment(chat_id: int, data: dict, vitals_date: str | None = None) -> str:
+    """The pure write-and-describe half of logging a vitals check-in --
+    writes the row and returns its confirmation text WITHOUT sending it, so
+    handlers.py's multi-domain dispatch can combine it with a meal and/or a
+    task fragment logged from the SAME message into one reply instead of
+    several separate Telegram messages (see ai.py's log_meal COMBINING RULE
+    for why a message can report vitals + a meal + a to-do all at once).
+    _log_vitals_and_reply below is the thin wrapper every other caller
+    (currently just /logvitals) still uses.
+
+    vitals_date lets the natural-language log_vitals intent backdate a
     check-in the same way meals/workouts/expenses now can -- see ai.py's
     logged_days_ago rule and handlers.py's use of
     nutrition._target_date_from_days_ago for how it's computed. _vitals_line
@@ -58,7 +67,14 @@ async def _log_vitals_and_reply(update: Update, chat_id: int, data: dict, vitals
     trend = _vitals_trend_text(chat_id, row)
     if trend:
         reply += f"\n{trend}"
-    await _reply(update, chat_id, reply)
+    return reply
+
+
+async def _log_vitals_and_reply(update: Update, chat_id: int, data: dict, vitals_date: str | None = None):
+    """Thin wrapper around _log_vitals_fragment for callers (currently just
+    /logvitals) that want the confirmation sent directly rather than
+    combined with other domains -- see _log_vitals_fragment's docstring."""
+    await _reply(update, chat_id, await _log_vitals_fragment(chat_id, data, vitals_date=vitals_date))
 
 
 async def logvitals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -265,6 +265,38 @@ def test_parse_system_prompt_documents_the_reminder_correction_domain():
     assert "done for TODAY only" in prompt
 
 
+def test_parse_system_prompt_documents_the_meal_vitals_task_combining_rule():
+    """Regression guard for the real production bug this closes (see
+    handlers.py's combined log_meal/log_vitals/log_task dispatch and its
+    own docstring): a message mixing a vitals check-in with a food mention
+    used to only ever log whichever ONE of them won "intent", silently
+    dropping the other. The prompt must now tell the model to populate
+    every one of meals/vitals/tasks it genuinely sees, not just whichever
+    one "intent" names -- these are the load-bearing phrases that
+    instruction depends on, pinned here so an unrelated prompt edit can't
+    quietly erode it."""
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "COMBINING RULE" in prompt
+    assert "EVERY one of \"meals\"" in prompt
+    assert "not just the one tied to whichever value you pick for \"intent\"" in prompt
+    # The three combinable domains must each point back at the rule, not
+    # just log_meal where it's spelled out in full -- otherwise a reader
+    # (model or human) landing on log_vitals/log_task alone would never
+    # know the exclusivity they're used to for log_workout doesn't apply.
+    assert "NOT exclusive with log_meal/log_task" in prompt
+    assert "log_meal (see its COMBINING RULE above)" in prompt
+
+
+def test_parse_system_prompt_still_keeps_workout_lift_exclusivity(monkeypatch):
+    """The combining rework is deliberately scoped to meal/vitals/task only
+    (see the approved design) -- log_workout/log_lift must still "pick one,
+    drop the rest for a follow-up" exactly as before, not be swept into the
+    new combining behavior by accident."""
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert "prefer whichever intent the message is PRIMARILY reporting" in prompt
+    assert "prefer whichever is more specific/detailed" in prompt
+
+
 # ---------- categorize: resilience ----------
 
 def test_categorize_returns_model_choice_when_valid(monkeypatch):

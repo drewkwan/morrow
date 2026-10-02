@@ -266,7 +266,10 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     "is_claimable": true or null (set true ONLY when the message says this should be claimed back, e.g. from an
     employer -- "I should claim this from my company"; null/omit otherwise, never guess true)}},
 
-  "meals": [list of one or more objects, log_meal only -- ALWAYS a list, even for a single meal]
+  "meals": [list of one or more objects -- set whenever the message reports food/drink actually consumed, even
+    if "intent" ends up being "log_vitals" or "log_task" instead of "log_meal" (see the log_meal/log_vitals/
+    log_task combining rule under log_meal's description below) -- ALWAYS a list when non-empty, even for a
+    single meal, and omitted/empty when nothing was eaten]
     each shaped: {{"meal_type": one of the meal type list, or null, "items": [list of individual food/drink
     items as short strings], "calories_low": number or null (a plausible low-end estimate, not false
     precision), "calories_high": number or null (plausible high end), "calories_estimate": number or null (the
@@ -333,14 +336,18 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     different equipment than usual), "logged_days_ago": integer or null (see logged_days_ago rule below --
     per item, since a session described after the fact could in principle span more than one day)}},
 
-  "weight_kg": number or null (log_vitals only),
-  "sleep_hours": number or null (log_vitals only),
-  "knee_pain": number or null (log_vitals only -- a 0-10 scale, only if a pain level is actually mentioned),
-  "vitals_notes": string or null (log_vitals only -- anything else worth keeping from a check-in),
+  "weight_kg": number or null (set whenever the message reports a weight check-in, even if "intent" ends up
+    being "log_meal" or "log_task" instead of "log_vitals" -- see the combining rule under log_meal above),
+  "sleep_hours": number or null (same combining rule as weight_kg),
+  "knee_pain": number or null (a 0-10 scale, only if a pain level is actually mentioned; same combining rule as
+    weight_kg),
+  "vitals_notes": string or null (anything else worth keeping from a check-in; same combining rule as
+    weight_kg),
 
-  "tasks": [list of one or more objects, log_task only -- ALWAYS a list, even for a single to-do, and however
-    many distinct to-dos are named in the message -- a numbered/bulleted list of 13 items means 13 objects, not
-    one] each shaped: {{"title": short actionable phrase for what needs doing, "due_in_days": integer or null
+  "tasks": [list of one or more objects -- set whenever the message names a to-do, even if "intent" ends up
+    being "log_meal" or "log_vitals" instead of "log_task" (see the combining rule under log_meal above) --
+    ALWAYS a list when non-empty, even for a single to-do, and however many distinct to-dos are named in the
+    message -- a numbered/bulleted list of 13 items means 13 objects, not one] each shaped: {{"title": short actionable phrase for what needs doing, "due_in_days": integer or null
     (0 = due today, 1 = due tomorrow, 2 = due in two days, etc.; null if no due date was mentioned for THIS
     item -- other items in the same list may have their own different due dates. Extract WHICH day as a plain
     count of days from today -- for an explicit date/weekday ("due the 25th", "due next Wednesday"), compute
@@ -595,6 +602,16 @@ Deciding the intent:
   individual items in its "items" list. Set water_ml only when plain water is explicitly mentioned for that
   meal (e.g. "750ml water") -- never estimate it for other drinks, and leave it null if no water is mentioned;
   a plain-water (or other drink) mention with no specific meal slot is still its own object (meal_type null).
+  COMBINING RULE (log_meal + log_vitals + log_task): unlike the log_lift/log_workout and log_workout/log_vitals
+  overlaps elsewhere on this list, log_meal does NOT compete with log_vitals or log_task for the same message --
+  a message can genuinely report a meal AND a vitals check-in AND a to-do all at once (e.g. "breakfast was eggs
+  and toast, slept 6 hours, knee's at a 3, and remind me to call the dentist tomorrow"). When that happens, fill
+  in EVERY one of "meals", the vitals fields (weight_kg/sleep_hours/knee_pain/vitals_notes), and "tasks" that
+  the message actually names -- not just the one tied to whichever value you pick for "intent". Still set
+  "intent" to whichever of log_meal/log_vitals/log_task (or any other intent) the message is PRIMARILY about,
+  using the same judgment call as always; "intent" only decides which confirmation leads the reply now, it no
+  longer means the other two domains' fields get dropped for a follow-up message the way the log_workout/
+  log_lift/log_vitals overlaps below still work.
 - "log_workout": the message is reporting a workout/training session just done with NO set-by-set exercise
   detail -- cardio, tennis, a general activity session, or a fitness-app/wearable calorie summary (e.g. "played
   tennis for an hour", "did IPPT training, ran 2.4km in 10:45", "gym, legs day" with nothing more specific than
@@ -632,7 +649,10 @@ Deciding the intent:
   (e.g. "weight 76.6, slept 5.5 hours, knee 2/10", "76.4kg today"). Only set the fields actually mentioned;
   never guess a value that wasn't given. This is distinct from log_workout -- a message can report vitals
   only, a workout only, or both (if it clearly reports both, prefer whichever is more specific/detailed and
-  let the other be logged in a follow-up message rather than guessing at fields for the one you skip).
+  let the other be logged in a follow-up message rather than guessing at fields for the one you skip). It is
+  NOT exclusive with log_meal/log_task the same way -- see the COMBINING RULE under log_meal above: a vitals
+  check-in reported alongside a meal and/or a to-do in the same message should fill in all of them (meals/
+  vitals fields/tasks), not just whichever one becomes "intent".
 - "log_task": the message is describing one or more new to-dos to track -- a ONE-OFF actionable item, done once
   and then finished for good, optionally with a deadline (e.g. "remind me to call the dentist tomorrow", "add
   buy milk to my list", "need to submit the report by friday 5pm", "todo: renew my passport", or a
@@ -648,7 +668,9 @@ Deciding the intent:
   the distinction from "add_reminder"'s daily-only habits. This is distinct from "remember" (a standing durable
   FACT/goal/preference with no deadline, nothing to check off) and from "add_reminder" below (a habit that
   recurs EVERY day, not a one-off item, and never has a due date) -- log_task (recurring or not) is always a
-  concrete thing with a title to be checked off each cycle, not a durable fact or a daily-only habit.
+  concrete thing with a title to be checked off each cycle, not a durable fact or a daily-only habit. Like
+  log_meal (see its COMBINING RULE above), a to-do reported alongside a meal and/or a vitals check-in in the
+  same message should fill in all of them -- "tasks" plus "meals" and/or the vitals fields -- not just "tasks".
 - "add_reminder": the message is asking to be reminded of the SAME thing EVERY DAY, indefinitely -- a recurring
   daily habit, not a one-off action with a deadline (e.g. "remind me every day to take my hair pills", "I need
   to take my vitamins daily, remind me", "add a daily reminder to stretch before bed"). The giveaway is

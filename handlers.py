@@ -24,19 +24,26 @@ from formatting import _money, _status_text
 from income import _log_deductions_and_reply, _log_incomes_and_reply
 from lifts import _log_lifts_and_reply, _recent_lifts_for_ai, _recent_lifts_for_narration
 from memory import _memory_for_ai, _memory_text
-from nutrition import _log_meals_and_reply, _target_date_from_days_ago
+from nutrition import _log_meals_fragment, _target_date_from_days_ago
 from events import _add_events_and_reply, _events_text
 from reminders import _add_reminder_and_reply, _reminders_text
 from replies import PENDING_DUPLICATE_WORKOUT_KEY, PENDING_KEY, _reply, _send_alert_if_needed
 from rundown import TREND_METRICS, _day_stats_payload, _day_stats_reply_text, _rundown_reply_text, _trend_reply_text
 from subscriptions import _log_subscriptions_and_reply
-from tasks import _log_tasks_and_reply, _recent_tasks_for_ai, _tasks_text
-from vitals import _log_vitals_and_reply
+from tasks import _log_tasks_fragment, _recent_tasks_for_ai, _tasks_text
+from vitals import _log_vitals_fragment
 
 logger = logging.getLogger(__name__)
 
 RECENT_EXPENSES_FOR_AI = 8  # how much history the model gets to resolve "that", "the duplicate", etc.
 RECENT_MESSAGES_FOR_AI = 30  # rolling conversation window -- see db.py's module docstring on messages vs memory
+
+# The scalar vitals fields ai.parse_message can populate alongside "meals"/
+# "tasks" in the SAME response -- see ai.py's log_meal COMBINING RULE. Used
+# by the combined log_meal/log_vitals/log_task dispatch below to detect a
+# vitals check-in reported in a message whose "intent" ended up being
+# "log_meal" or "log_task" instead of "log_vitals".
+VITALS_FIELDS = ("weight_kg", "sleep_hours", "knee_pain", "vitals_notes")
 
 
 def _recent_for_ai(chat_id: int) -> list:
@@ -352,13 +359,51 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if intent == "log_meal":
+    if intent in ("log_meal", "log_vitals", "log_task"):
         context.chat_data.pop(PENDING_KEY, None)
+        # A meal, a vitals check-in, and a to-do can all be reported in the
+        # SAME message (e.g. "breakfast was eggs and toast, slept 6 hours,
+        # and remind me to call the dentist tomorrow") -- ai.py's log_meal
+        # COMBINING RULE has the model populate every one of these three
+        # domains it genuinely sees, instead of picking a single "intent"
+        # and dropping the rest for a follow-up message the way
+        # log_workout/log_lift/log_vitals still do. So this checks all three
+        # domains' fields regardless of which one "intent" landed on, and
+        # combines whatever actually got logged into ONE reply (see
+        # vitals._log_vitals_fragment / nutrition._log_meals_fragment /
+        # tasks._log_tasks_fragment's docstrings for the fragment-not-reply
+        # split that makes this possible). A message naming only one of the
+        # three behaves exactly as before -- only its own fragment is ever
+        # non-empty, so the reply is unchanged.
+        fragments = []
+
         meals = parsed.get("meals") or []
-        if not meals:
-            await _reply(update, chat_id, "I didn't catch what you ate -- try describing it again.")
+        if meals:
+            fragments.append(await _log_meals_fragment(chat_id, meals))
+
+        # intent == "log_vitals" always logs a check-in, even one with every
+        # field null -- the same unconditional behavior this branch had
+        # before the combining rework. VITALS_FIELDS catches the combining
+        # case: vitals reported alongside a meal/task whose own intent won.
+        if intent == "log_vitals" or any(parsed.get(f) is not None for f in VITALS_FIELDS):
+            vitals_date = _target_date_from_days_ago(parsed.get("logged_days_ago"))
+            fragments.append(await _log_vitals_fragment(chat_id, parsed, vitals_date=vitals_date))
+
+        tasks = parsed.get("tasks") or []
+        if tasks:
+            fragments.append(await _log_tasks_fragment(chat_id, tasks))
+
+        if not fragments:
+            # Only reachable for intent in {"log_meal", "log_task"} -- the
+            # "log_vitals" branch above always contributes a fragment.
+            fallback = (
+                "I didn't catch what you ate -- try describing it again." if intent == "log_meal" else
+                "I didn't catch what to add -- try describing the to-do again."
+            )
+            await _reply(update, chat_id, fallback)
             return
-        await _log_meals_and_reply(update, chat_id, meals)
+
+        await _reply(update, chat_id, "\n\n".join(fragments))
         return
 
     if intent == "log_workout":
@@ -387,12 +432,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply(update, chat_id, "I didn't catch the exercise -- try describing it again.")
             return
         await _log_lifts_and_reply(update, chat_id, lifts)
-        return
-
-    if intent == "log_vitals":
-        context.chat_data.pop(PENDING_KEY, None)
-        vitals_date = _target_date_from_days_ago(parsed.get("logged_days_ago"))
-        await _log_vitals_and_reply(update, chat_id, parsed, vitals_date=vitals_date)
         return
 
     if intent == "log_income":
@@ -431,15 +470,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         await _log_subscriptions_and_reply(update, chat_id, subscription_items)
-        return
-
-    if intent == "log_task":
-        context.chat_data.pop(PENDING_KEY, None)
-        tasks = parsed.get("tasks") or []
-        if not tasks:
-            await _reply(update, chat_id, "I didn't catch what to add -- try describing the to-do again.")
-            return
-        await _log_tasks_and_reply(update, chat_id, tasks)
         return
 
     if intent == "show_tasks":

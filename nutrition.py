@@ -40,14 +40,19 @@ def _target_date_from_days_ago(days_ago) -> str | None:
     return (date.fromisoformat(db.today_str()) - timedelta(days=days_ago)).isoformat()
 
 
-async def _log_meal_and_reply(update: Update, chat_id: int, data: dict, meal_date: str | None = None):
-    """Shared by /logmeal, photo logging, and the natural-language log_meal
-    intent -- one insert, one reply shape, so all three paths are
-    guaranteed to say the same thing (see finance._balance_text's docstring
-    for the same reasoning applied to /balance). meal_date lets a caller
-    that already computed a real backdated date (see
-    _target_date_from_days_ago) log directly onto the right day instead of
-    defaulting to today and needing a follow-up correction."""
+async def _log_meal_fragment(chat_id: int, data: dict, meal_date: str | None = None) -> str:
+    """The pure write-and-describe half of logging a single meal -- writes
+    the row and returns its confirmation text WITHOUT sending it, so
+    handlers.py's multi-domain dispatch can combine it with a vitals and/or
+    a task fragment logged from the SAME message into one reply instead of
+    several separate Telegram messages (see ai.py's log_meal COMBINING RULE
+    for why a message can report a meal + vitals + a to-do all at once).
+    _log_meal_and_reply below is the thin wrapper every other caller
+    (/logmeal, photo logging) still uses.
+
+    meal_date lets a caller that already computed a real backdated date
+    (see _target_date_from_days_ago) log directly onto the right day
+    instead of defaulting to today and needing a follow-up correction."""
     meal_id = db.add_meal(
         chat_id, data.get("meal_type"), data.get("items") or data.get("meal_items"),
         data.get("calories_low"), data.get("calories_high"), data.get("calories_estimate"),
@@ -56,20 +61,29 @@ async def _log_meal_and_reply(update: Update, chat_id: int, data: dict, meal_dat
     row = db.get_meal(chat_id, meal_id)
     items = ", ".join(row["items"]) or "meal"
     water_line = f"\nWater: +{row['water_ml']:.0f}ml" if row.get("water_ml") else ""
-    await _reply(
-        update, chat_id,
-        f"Logged: {items} -- {_calorie_range(row)}{water_line}\n\n{_daily_meal_totals_text(chat_id, meal_date)}"
-    )
+    return f"Logged: {items} -- {_calorie_range(row)}{water_line}\n\n{_daily_meal_totals_text(chat_id, meal_date)}"
 
 
-async def _log_meals_and_reply(update: Update, chat_id: int, meals: list):
-    """Entry point for the natural-language log_meal intent, which can name
-    more than one meal in a single message (e.g. "for breakfast: toast and
-    coffee. For lunch: noodles and a latte") -- this used to be the real bug:
-    parse_message only had room for ONE meal's fields, so a second meal
-    mentioned in the same message was silently dropped rather than logged.
-    ai.py now always returns a list ("meals"), mirroring log_expense's
-    existing multi-item discipline.
+async def _log_meal_and_reply(update: Update, chat_id: int, data: dict, meal_date: str | None = None):
+    """Thin wrapper around _log_meal_fragment for callers (/logmeal, photo
+    logging) that want the confirmation sent directly rather than combined
+    with other domains -- see _log_meal_fragment's docstring."""
+    await _reply(update, chat_id, await _log_meal_fragment(chat_id, data, meal_date=meal_date))
+
+
+async def _log_meals_fragment(chat_id: int, meals: list) -> str:
+    """The pure write-and-describe half of the natural-language log_meal
+    intent, which can name more than one meal in a single message (e.g.
+    "for breakfast: toast and coffee. For lunch: noodles and a latte") --
+    this used to be the real bug: parse_message only had room for ONE
+    meal's fields, so a second meal mentioned in the same message was
+    silently dropped rather than logged. ai.py now always returns a list
+    ("meals"), mirroring log_expense's existing multi-item discipline.
+    Returns the confirmation text WITHOUT sending it, so handlers.py's
+    multi-domain dispatch can combine it with a vitals and/or a task
+    fragment logged from the SAME message into one reply (see ai.py's
+    log_meal COMBINING RULE) -- _log_meals_and_reply below is the thin
+    wrapper every other caller still uses.
 
     Each item carries its own "logged_days_ago" (see ai.py's logged_days_ago
     rule) -- a real bug this fixes: "last night I also had a cup of tea"
@@ -80,15 +94,14 @@ async def _log_meals_and_reply(update: Update, chat_id: int, meals: list):
     _target_date_from_days_ago) -- per item, since one message can
     legitimately describe more than one day's meals at once.
 
-    A single meal reuses _log_meal_and_reply's exact wording/behavior
+    A single meal reuses _log_meal_fragment's exact wording/behavior
     unchanged (same reply shape existing callers/tests expect); more than
-    one meal gets ONE combined reply -- each meal on its own line -- plus a
-    running total per distinct day actually touched (almost always just
-    one), rather than a separate message per meal."""
+    one meal gets ONE combined fragment -- each meal on its own line --
+    plus a running total per distinct day actually touched (almost always
+    just one), rather than a separate message per meal."""
     if len(meals) == 1:
         m = meals[0]
-        await _log_meal_and_reply(update, chat_id, m, meal_date=_target_date_from_days_ago(m.get("logged_days_ago")))
-        return
+        return await _log_meal_fragment(chat_id, m, meal_date=_target_date_from_days_ago(m.get("logged_days_ago")))
 
     entries = []  # (line, meal_date) so date tags can be added after we know whether any actually differ
     dates_used = []
@@ -114,10 +127,14 @@ async def _log_meals_and_reply(update: Update, chat_id: int, meals: list):
     lines = [f"{ln} ({d})" if mixed_days else ln for ln, d in entries]
     body = "\n".join(f"- {ln}" for ln in lines)
     totals = "\n".join(_daily_meal_totals_text(chat_id, d) for d in dates_used)
-    await _reply(
-        update, chat_id,
-        f"Logged {len(lines)} meals:\n{body}\n\n{totals}"
-    )
+    return f"Logged {len(lines)} meals:\n{body}\n\n{totals}"
+
+
+async def _log_meals_and_reply(update: Update, chat_id: int, meals: list):
+    """Thin wrapper around _log_meals_fragment for callers that want the
+    confirmation sent directly rather than combined with other domains --
+    see _log_meals_fragment's docstring."""
+    await _reply(update, chat_id, await _log_meals_fragment(chat_id, meals))
 
 
 async def logmeal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

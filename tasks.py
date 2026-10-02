@@ -66,13 +66,17 @@ def _recurrence_from_fields(recurrence) -> str | None:
     return recurrence if recurrence in db.RECURRENCE_FREQUENCIES else None
 
 
-async def _log_task_and_reply(update: Update, chat_id: int, data: dict):
-    """data may come from either parse_message's natural-language schema
+async def _add_task_from_fields(chat_id: int, data: dict) -> str:
+    """Pure DB write, shared by every task-logging path -- data may come
+    from either parse_message's natural-language schema
     (task_title/task_due_in_days/task_due_time/task_notes/task_recurrence)
     or extract_task's own field names (title/due_in_days/due_time/notes/
-    recurrence) -- merged the same way vitals._log_vitals_and_reply merges
+    recurrence) -- merged the same way vitals._log_vitals_fragment merges
     vitals_notes/notes, so /addtask and the natural-language path share
-    this one code path."""
+    this one code path. Returns the _task_line summary for the just-created
+    row, with no "Added:"/"Added N:" wrapping -- see the callers below for
+    how that's applied depending on whether it's the only item or one of
+    several in the same message."""
     title = data.get("task_title") or data.get("title") or "to-do"
     due_in_days = data.get("task_due_in_days")
     if due_in_days is None:
@@ -83,42 +87,57 @@ async def _log_task_and_reply(update: Update, chat_id: int, data: dict):
     due_at = _due_at_from_fields(due_in_days, due_time)
     task_id = db.add_task(chat_id, title, due_at, notes, recurrence_frequency)
     row = db.get_task(chat_id, task_id)
-    await _reply(update, chat_id, f"Added: {_task_line(row)}")
+    return _task_line(row)
+
+
+async def _log_task_fragment(chat_id: int, data: dict) -> str:
+    """The pure write-and-describe half of logging a single to-do -- writes
+    the row and returns its confirmation text WITHOUT sending it, so
+    handlers.py's multi-domain dispatch can combine it with a meal and/or a
+    vitals fragment logged from the SAME message into one reply instead of
+    several separate Telegram messages (see ai.py's log_meal COMBINING RULE
+    for why a message can report a to-do + a meal + vitals all at once).
+    _log_task_and_reply below is the thin wrapper every other caller
+    (currently just /addtask) still uses."""
+    return f"Added: {await _add_task_from_fields(chat_id, data)}"
+
+
+async def _log_task_and_reply(update: Update, chat_id: int, data: dict):
+    """Thin wrapper around _log_task_fragment for callers (currently just
+    /addtask) that want the confirmation sent directly rather than combined
+    with other domains -- see _log_task_fragment's docstring."""
+    await _reply(update, chat_id, await _log_task_fragment(chat_id, data))
+
+
+async def _log_tasks_fragment(chat_id: int, tasks: list) -> str:
+    """The pure write-and-describe half of the natural-language log_task
+    intent, which can name many separate to-dos in one message (e.g. a
+    numbered list of 13 things to do) -- this used to be the real bug:
+    parse_message's log_task fields were singular (task_title/
+    task_due_in_days/task_due_time/task_notes, one slot per message), so a
+    message listing several to-dos collapsed to a single, often title-less
+    "to-do" entry instead of logging each one. ai.py now always returns a
+    list ("tasks"), mirroring log_expense's and log_meal's existing
+    multi-item discipline. Returns the confirmation text WITHOUT sending
+    it -- see _log_task_fragment's docstring for why -- _log_tasks_and_reply
+    below is the thin wrapper every other caller still uses.
+
+    A single task reuses _log_task_fragment's exact wording/behavior
+    unchanged; more than one gets ONE combined fragment -- each to-do on
+    its own line -- rather than a separate message per item."""
+    if len(tasks) == 1:
+        return await _log_task_fragment(chat_id, tasks[0])
+
+    lines = [await _add_task_from_fields(chat_id, t) for t in tasks]
+    body = "\n".join(lines)
+    return f"Added {len(lines)} to-dos:\n{body}"
 
 
 async def _log_tasks_and_reply(update: Update, chat_id: int, tasks: list):
-    """Entry point for the natural-language log_task intent, which can name
-    many separate to-dos in one message (e.g. a numbered list of 13 things
-    to do) -- this used to be the real bug: parse_message's log_task fields
-    were singular (task_title/task_due_in_days/task_due_time/task_notes, one
-    slot per message), so a message listing several to-dos collapsed to a
-    single, often title-less "to-do" entry instead of logging each one.
-    ai.py now always returns a list ("tasks"), mirroring log_expense's and
-    log_meal's existing multi-item discipline.
-
-    A single task reuses _log_task_and_reply's exact wording/behavior
-    unchanged; more than one gets ONE combined reply -- each to-do on its
-    own line -- rather than a separate message per item."""
-    if len(tasks) == 1:
-        await _log_task_and_reply(update, chat_id, tasks[0])
-        return
-
-    lines = []
-    for t in tasks:
-        title = t.get("task_title") or t.get("title") or "to-do"
-        due_in_days = t.get("task_due_in_days")
-        if due_in_days is None:
-            due_in_days = t.get("due_in_days")
-        due_time = t.get("task_due_time") or t.get("due_time")
-        notes = t.get("task_notes") or t.get("notes")
-        recurrence_frequency = _recurrence_from_fields(t.get("task_recurrence") or t.get("recurrence"))
-        due_at = _due_at_from_fields(due_in_days, due_time)
-        task_id = db.add_task(chat_id, title, due_at, notes, recurrence_frequency)
-        row = db.get_task(chat_id, task_id)
-        lines.append(_task_line(row))
-
-    body = "\n".join(lines)
-    await _reply(update, chat_id, f"Added {len(lines)} to-dos:\n{body}")
+    """Thin wrapper around _log_tasks_fragment for callers that want the
+    confirmation sent directly rather than combined with other domains --
+    see _log_tasks_fragment's docstring."""
+    await _reply(update, chat_id, await _log_tasks_fragment(chat_id, tasks))
 
 
 async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

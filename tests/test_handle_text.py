@@ -766,3 +766,171 @@ def test_genuinely_unmatched_intent_gets_generic_command_menu_not_casual_call(mo
     _run(bot.handle_text(update, context))
     assert not called
     assert "Not sure what to do with that" in update.message.replies[-1]
+
+
+# ---------- multi-domain combining: log_meal + log_vitals + log_task ----------
+#
+# The real production bug this guards against (see ai.py's log_meal
+# COMBINING RULE docstring, and replies.py/ai.py's narrate_reply hardening
+# earlier in this file's history): a message mixing a vitals check-in with
+# a food mention used to log only whichever ONE of them won "intent" and
+# silently drop the other -- the user never noticed until the companion-
+# voice narration layer separately fabricated a fake confirmation for the
+# dropped item. ai.parse_message is mocked here to return more than one
+# domain's fields populated in the SAME response -- exactly what the real
+# model is now asked to do -- and these tests check handlers.py actually
+# writes every populated domain to the DB and combines them into one reply,
+# instead of acting on only whichever one "intent" names.
+
+def _fake_parse_message_returning(payload):
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return payload
+    return fake_parse_message
+
+
+def _combining_payload(**overrides):
+    base = {
+        "meals": None,
+        "weight_kg": None, "sleep_hours": None, "knee_pain": None, "vitals_notes": None,
+        "tasks": None,
+        "clarification_question": None, "casual_reply": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_meal_and_vitals_in_one_message_both_get_logged_and_combined(monkeypatch):
+    """This is the exact shape of the real incident: a check-in mixed with
+    a breakfast mention. 'intent' lands on log_vitals (the model's PRIMARY
+    read of the message), but the meal fields are populated too and must
+    still be written and confirmed, not dropped for a follow-up message."""
+    db.get_or_create_user(CHAT)
+    context = FakeContext()
+    payload = _combining_payload(
+        intent="log_vitals",
+        weight_kg=76.6,
+        meals=[{"meal_type": "Breakfast", "items": ["eggs", "toast"],
+                "calories_low": 300, "calories_high": 400, "calories_estimate": 350, "water_ml": None}],
+    )
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_returning(payload))
+    update = FakeUpdate(CHAT, "weight 76.6 today, had eggs and toast for breakfast")
+    _run(bot.handle_text(update, context))
+
+    assert db.get_recent_vitals(CHAT)[0]["weight_kg"] == 76.6
+    meals = db.get_recent_meals(CHAT, limit=5)
+    assert len(meals) == 1
+    assert meals[0]["items"] == ["eggs", "toast"]
+
+    reply = update.message.replies[-1]
+    assert "76.6" in reply
+    assert "eggs" in reply and "toast" in reply
+
+
+def test_vitals_and_task_in_one_message_both_get_logged_and_combined(monkeypatch):
+    db.get_or_create_user(CHAT)
+    context = FakeContext()
+    payload = _combining_payload(
+        intent="log_task",
+        sleep_hours=6.0,
+        tasks=[{"title": "call the dentist", "due_in_days": 1, "due_time": None, "notes": None}],
+    )
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_returning(payload))
+    update = FakeUpdate(CHAT, "slept 6 hours, remind me to call the dentist tomorrow")
+    _run(bot.handle_text(update, context))
+
+    assert db.get_recent_vitals(CHAT)[0]["sleep_hours"] == 6.0
+    assert len(db.get_open_tasks(CHAT)) == 1
+
+    reply = update.message.replies[-1]
+    assert "6.0h" in reply
+    assert "dentist" in reply
+
+
+def test_meal_vitals_and_task_all_in_one_message_get_logged_and_combined(monkeypatch):
+    """All three at once -- the scope the approved design explicitly
+    targeted (vitals + task + meal), with the framework left extensible to
+    the other logging domains later."""
+    db.get_or_create_user(CHAT)
+    context = FakeContext()
+    payload = _combining_payload(
+        intent="log_meal",
+        meals=[{"meal_type": "Breakfast", "items": ["eggs", "toast"],
+                "calories_low": 300, "calories_high": 400, "calories_estimate": 350, "water_ml": None}],
+        sleep_hours=6.0, knee_pain=3,
+        tasks=[{"title": "call the dentist", "due_in_days": 1, "due_time": None, "notes": None}],
+    )
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_returning(payload))
+    update = FakeUpdate(
+        CHAT,
+        "breakfast was eggs and toast, slept 6 hours, knee's at a 3, and remind me to call the dentist tomorrow",
+    )
+    _run(bot.handle_text(update, context))
+
+    assert len(db.get_recent_meals(CHAT, limit=5)) == 1
+    assert db.get_recent_vitals(CHAT)[0]["sleep_hours"] == 6.0
+    assert len(db.get_open_tasks(CHAT)) == 1
+
+    reply = update.message.replies[-1]
+    assert "eggs" in reply
+    assert "dentist" in reply
+
+
+def test_single_domain_log_meal_message_is_unaffected_by_the_combining_dispatch(monkeypatch):
+    """Backward-compat pin, per the approved design's explicit goal: a
+    message naming ONLY a meal must get exactly the same single-fragment
+    reply as before the combining rework -- no extra blank-line joins, and
+    vitals/tasks must stay untouched."""
+    db.get_or_create_user(CHAT)
+    context = FakeContext()
+    payload = _combining_payload(
+        intent="log_meal",
+        meals=[{"meal_type": "Snack", "items": ["mango"],
+                "calories_low": 90, "calories_high": 120, "calories_estimate": 105, "water_ml": None}],
+    )
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_returning(payload))
+    update = FakeUpdate(CHAT, "had a mango")
+    _run(bot.handle_text(update, context))
+
+    assert db.get_recent_vitals(CHAT) == []
+    assert db.get_open_tasks(CHAT) == []
+    reply = update.message.replies[-1]
+    assert reply.startswith("Logged: mango")
+    assert "\n\n\n" not in reply  # no extra combining artifact beyond the usual single blank line
+
+
+def test_log_meal_with_nothing_caught_still_shows_the_fallback(monkeypatch):
+    db.get_or_create_user(CHAT)
+    context = FakeContext()
+    payload = _combining_payload(intent="log_meal")
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_returning(payload))
+    update = FakeUpdate(CHAT, "???")
+    _run(bot.handle_text(update, context))
+    assert update.message.replies == ["I didn't catch what you ate -- try describing it again."]
+
+
+def test_log_task_with_nothing_caught_still_shows_the_fallback(monkeypatch):
+    db.get_or_create_user(CHAT)
+    context = FakeContext()
+    payload = _combining_payload(intent="log_task")
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_returning(payload))
+    update = FakeUpdate(CHAT, "???")
+    _run(bot.handle_text(update, context))
+    assert update.message.replies == ["I didn't catch what to add -- try describing the to-do again."]
+
+
+def test_log_vitals_with_every_field_null_still_logs_unconditionally(monkeypatch):
+    """Matches the pre-combining behavior exactly: a log_vitals intent
+    always wrote a row, even an all-null one, relying on the model only
+    choosing this intent when there's genuine vitals content -- this must
+    stay true after the combining rework, not gain a new 'didn't catch'
+    rejection it never had before."""
+    db.get_or_create_user(CHAT)
+    context = FakeContext()
+    payload = _combining_payload(intent="log_vitals")
+    monkeypatch.setattr(bot.ai, "parse_message", _fake_parse_message_returning(payload))
+    update = FakeUpdate(CHAT, "checking in")
+    _run(bot.handle_text(update, context))
+    assert len(db.get_recent_vitals(CHAT)) == 1

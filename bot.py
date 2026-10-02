@@ -140,7 +140,9 @@ from morning import _morning_briefing_payload, _morning_briefing_text, morning_b
 from nudges import evening_nudge_tick
 from nutrition import (
     _log_meal_and_reply,
+    _log_meal_fragment,
     _log_meals_and_reply,
+    _log_meals_fragment,
     _target_date_from_days_ago,
     handle_photo,
     logmeal_cmd,
@@ -177,16 +179,19 @@ from rundown import (
 )
 from summary import WEEKDAY_NAMES, _category_insights_for_period, summary
 from tasks import (
+    _add_task_from_fields,
     _due_at_from_fields,
     _log_task_and_reply,
+    _log_task_fragment,
     _log_tasks_and_reply,
+    _log_tasks_fragment,
     _recent_tasks_for_ai,
     _tasks_text,
     addtask_cmd,
     done_cmd,
     tasks_cmd,
 )
-from vitals import _log_vitals_and_reply, _vitals_trend_text, logvitals_cmd, recentvitals
+from vitals import _log_vitals_and_reply, _log_vitals_fragment, _vitals_trend_text, logvitals_cmd, recentvitals
 
 # This module no longer configures logging itself -- app.py does, since
 # it's the actual entrypoint (import bot -> import app runs it already).

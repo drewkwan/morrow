@@ -211,6 +211,28 @@ def test_parse_message_falls_back_on_invalid_json(monkeypatch):
     assert result["intent"] == "clarification"
 
 
+def test_parse_message_requests_enough_tokens_for_a_large_bulk_paste(monkeypatch):
+    """Regression guard for a real production incident: Andrew pasted a
+    starter list of 24 subscriptions in one message and the bot replied with
+    a generic "didn't quite catch that" fallback instead of logging any of
+    them. Root cause: the full parse_message response schema has ~84
+    top-level fields (most null on any given call) PLUS one object per
+    subscription -- for 24 subscriptions the complete, valid response comes
+    to roughly 1700-2200 tokens, well over the max_tokens=1500 cap that was
+    in place at the time. The real API call got cut off mid-object, so
+    _safe_json's own json.loads and best-effort recovery both failed on the
+    truncated JSON and silently fell back to a single generic clarification
+    -- for all 24 subscriptions at once, not just the ones past some limit.
+    This pins max_tokens comfortably above that observed worst case so a
+    large bulk paste (subscriptions, tasks, or expenses) has real room to
+    complete instead of being cut off into invalid JSON."""
+    fake = _mock_recording_client(
+        monkeypatch, json.dumps({"intent": "casual", "casual_reply": "ok", "clarification_question": None})
+    )
+    ai.parse_message("doesn't matter for this test", [])
+    assert fake.calls[0]["max_tokens"] >= 4000
+
+
 # ---------- categorize: resilience ----------
 
 def test_categorize_returns_model_choice_when_valid(monkeypatch):

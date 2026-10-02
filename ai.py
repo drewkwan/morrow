@@ -1280,8 +1280,17 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
             # now always lists -- a message naming a dozen-plus separate to-dos (a real
             # observed failure: 13 to-dos in one message only produced one, title-less
             # entry) needs real room to emit that many objects without truncating into
-            # invalid JSON and silently falling back to a single generic item.
-            max_tokens=1500,
+            # invalid JSON and silently falling back to a single generic item. 1500 itself
+            # turned out to still be too small: a real production message pasting in a
+            # starter list of 24 subscriptions (each subscription object alone has ~9
+            # fields) on top of this schema's ~84 top-level response fields comes to
+            # roughly 1700-2200 tokens for the complete, valid response -- comfortably
+            # over 1500, so the real call got cut off mid-object, json.loads failed both
+            # the direct and best-effort-recovery parse in _safe_json, and the whole
+            # message silently fell back to a generic "didn't quite catch that" reply.
+            # Sized well above today's worst observed case so a large bulk paste (more
+            # subscriptions, tasks, or expenses at once) has real room to complete.
+            max_tokens=4096,
             system=PARSE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )

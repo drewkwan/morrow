@@ -536,7 +536,7 @@ def _fake_parse_message_income(items):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "log_income", "clarification_question": None, "casual_reply": None,
             "income": items, **_no_op_extra_fields(),
@@ -548,7 +548,7 @@ def _fake_parse_message_deduction(items):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "log_deduction", "clarification_question": None, "casual_reply": None,
             "deductions": items, **_no_op_extra_fields(),
@@ -675,7 +675,7 @@ def test_correction_can_edit_an_income_entry_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "income", "target_expense_id": income_id,
             "correction_action": "edit_income", "new_income_amount": 600,
@@ -700,7 +700,7 @@ def test_correction_edit_income_with_nothing_set_asks_what_to_fix(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "income", "target_expense_id": income_id,
             "correction_action": "edit_income",
@@ -720,7 +720,7 @@ def test_correction_can_edit_a_deduction_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "deduction", "target_expense_id": deduction_id,
             "correction_action": "edit_deduction", "new_deduction_amount": 900,
@@ -749,7 +749,7 @@ def test_correction_can_edit_income_config_raise_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "income_config",
             "correction_action": "edit_income_config", "new_income_config_gross_amount": 7000,
@@ -776,7 +776,7 @@ def test_correction_edit_income_config_with_no_config_asks_to_setincome_first(mo
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "income_config",
             "correction_action": "edit_income_config", "new_income_config_gross_amount": 7000,
@@ -795,7 +795,7 @@ def test_correction_edit_income_config_with_nothing_given_asks_for_gross_salary(
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "income_config", "correction_action": "edit_income_config",
             "clarification_question": None, "casual_reply": None,

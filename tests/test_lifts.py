@@ -129,7 +129,7 @@ def test_natural_language_log_lift_single_exercise(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "log_lift",
             "lifts": [{"exercise": "pull-ups", "location": "AF Wheelock",
@@ -158,7 +158,7 @@ def test_natural_language_log_lift_multiple_exercises_in_one_message(monkeypatch
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "log_lift",
             "lifts": [
@@ -220,7 +220,7 @@ def test_natural_language_log_lift_shows_comparison_to_last_session(monkeypatch)
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "log_lift",
             "lifts": [{"exercise": "pull-ups", "location": "AF Wheelock",
@@ -278,7 +278,7 @@ def test_correction_can_delete_a_lift_by_domain(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "lift", "target_expense_id": lift_id,
             "correction_action": "delete", "days_ago": None,
@@ -299,7 +299,7 @@ def test_undo_reverts_a_lift_deletion(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "lift", "target_expense_id": lift_id,
             "correction_action": "delete", "days_ago": None,
@@ -325,7 +325,7 @@ def test_correction_can_edit_a_lift_date_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "lift", "target_expense_id": lift_id,
             "correction_action": "edit_date", "days_ago": 1,
@@ -357,7 +357,7 @@ def test_correction_can_edit_a_lifts_sets_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "lift", "target_expense_id": lift_id,
             "correction_action": "edit_lift", "new_lift_sets": corrected_sets,
@@ -434,7 +434,7 @@ def test_correction_edit_lift_with_nothing_set_asks_what_to_fix(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "lift", "target_expense_id": lift_id,
             "correction_action": "edit_lift",

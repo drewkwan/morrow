@@ -411,7 +411,7 @@ def test_correction_can_edit_a_subscription_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "subscription", "target_expense_id": sub_id,
             "correction_action": "edit_subscription", "new_subscription_amount": 17.98,
@@ -436,7 +436,7 @@ def test_correction_can_edit_a_subscriptions_frequency_and_renewal_date(monkeypa
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "subscription", "target_expense_id": sub_id,
             "correction_action": "edit_subscription", "new_subscription_frequency": "quarterly",
@@ -459,7 +459,7 @@ def test_correction_can_mark_a_subscription_claimable(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "subscription", "target_expense_id": sub_id,
             "correction_action": "edit_subscription", "new_subscription_is_claimable": True,
@@ -479,7 +479,7 @@ def test_correction_edit_subscription_with_nothing_set_asks_what_to_fix(monkeypa
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "subscription", "target_expense_id": sub_id,
             "correction_action": "edit_subscription",
@@ -502,7 +502,7 @@ def test_correction_subscription_has_no_edit_date_action(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "subscription", "target_expense_id": sub_id,
             "correction_action": "edit_date", "days_ago": 1,
@@ -522,7 +522,7 @@ def test_correction_can_delete_a_subscription_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "subscription", "target_expense_id": sub_id,
             "correction_action": "delete",
@@ -546,7 +546,7 @@ def _fake_parse_message_subscription(items):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "log_subscription", "subscriptions": items,
             "clarification_question": None, "casual_reply": None,

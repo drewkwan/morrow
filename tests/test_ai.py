@@ -233,6 +233,28 @@ def test_parse_message_requests_enough_tokens_for_a_large_bulk_paste(monkeypatch
     assert fake.calls[0]["max_tokens"] >= 4000
 
 
+def test_parse_message_passes_recent_reminders_into_the_prompt(monkeypatch):
+    """Regression guard, same reasoning as recent_expenses above: without
+    seeing the standing daily reminders list, the model has no way to know
+    which reminder "took my hair pills" or "stop reminding me about that"
+    refers to (target_domain="reminder" correction, see ai.py's PARSE_
+    SYSTEM_PROMPT and correction.py's _handle_reminder_correction)."""
+    fake = _mock_recording_client(monkeypatch, json.dumps({
+        "intent": "casual", "clarification_question": None, "casual_reply": "hey!",
+    }))
+    recent_reminders = [{"id": 7, "description": "take hair pills", "last_done_date": None}]
+    ai.parse_message("hi", recent_reminders=recent_reminders)
+    sent_content = fake.calls[0]["messages"][0]["content"]
+    assert "take hair pills" in sent_content
+    assert '"id": 7' in sent_content
+
+
+def test_parse_system_prompt_documents_the_reminder_correction_domain():
+    prompt = ai.PARSE_SYSTEM_PROMPT
+    assert '"reminder"' in prompt
+    assert "done for TODAY only" in prompt
+
+
 # ---------- categorize: resilience ----------
 
 def test_categorize_returns_model_choice_when_valid(monkeypatch):

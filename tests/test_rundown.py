@@ -162,7 +162,7 @@ def test_natural_language_rundown_replies_with_synthesis(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "rundown", "clarification_question": None, "casual_reply": None,
             **_no_op_extra_fields(),
@@ -188,7 +188,7 @@ def test_natural_language_rundown_reply_is_not_narrated_a_second_time(monkeypatc
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "rundown", "clarification_question": None, "casual_reply": None,
             **_no_op_extra_fields(),
@@ -211,7 +211,7 @@ def test_natural_language_rundown_logs_to_conversation_history(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "rundown", "clarification_question": None, "casual_reply": None,
             **_no_op_extra_fields(),
@@ -357,7 +357,7 @@ def _fake_parse_message_day_stats(days_ago):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "day_stats", "clarification_question": None, "casual_reply": None,
             "day_stats_days_ago": days_ago,
@@ -621,7 +621,7 @@ def _fake_parse_message_trend(metric, start_days_ago=None, end_days_ago=None):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "trend", "clarification_question": None, "casual_reply": None,
             "trend_metric": metric, "trend_start_days_ago": start_days_ago, "trend_end_days_ago": end_days_ago,

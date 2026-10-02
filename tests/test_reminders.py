@@ -172,7 +172,7 @@ def test_natural_language_add_reminder(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "add_reminder", "reminder_description": "take hair pills",
             "clarification_question": None, "casual_reply": None,
@@ -191,7 +191,7 @@ def test_natural_language_add_reminder_without_a_description_asks_instead_of_gue
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "add_reminder", "reminder_description": None,
             "clarification_question": None, "casual_reply": None,
@@ -211,7 +211,7 @@ def test_natural_language_show_reminders(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "show_reminders",
             "clarification_question": None, "casual_reply": None,
@@ -265,3 +265,134 @@ def test_a_reminder_done_today_is_pending_again_the_next_day(monkeypatch):
     monkeypatch.setattr(db, "_now_local_date", lambda: tomorrow)
     payload = bot._morning_briefing_payload(CHAT)
     assert [r["description"] for r in payload["reminders_pending"]] == ["take hair pills"]
+
+
+# ---------- natural language: correction (mark_done / delete) ----------
+#
+# Regression coverage for a real, explicit ask: "I don't want to have to do
+# fuckin telegram commands, I want to do my shit in plain chat text" --
+# mark_done/delete used to be /donereminder-/removereminder-only (see this
+# module's own docstring for why that was a deliberate, temporary scope cut).
+# These mirror test_tasks.py's NL mark_done/delete correction tests, but
+# target_domain="reminder" instead of "task", and confirm the EXISTING
+# _revert_last_correction "reminder" branch (built for the slash commands
+# above) also covers the natural-language path without any changes of its
+# own -- same snapshot shape, same undo code.
+
+def _reminder_correction(target_id, action, **extra):
+    return {
+        "intent": "correction", "target_domain": "reminder", "target_expense_id": target_id,
+        "correction_action": action,
+        "clarification_question": None, "casual_reply": None,
+        **extra,
+    }
+
+
+def test_natural_language_mark_reminder_done_for_today(monkeypatch):
+    db.get_or_create_user(CHAT)
+    reminder_id = db.add_reminder(CHAT, "take hair pills")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        assert recent_reminders == [{"id": reminder_id, "description": "take hair pills", "last_done_date": None}]
+        return _reminder_correction(reminder_id, "mark_done")
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="took my hair pills")
+    _run(bot.handle_text(update, FakeContext()))
+    assert db.get_reminder(CHAT, reminder_id)["last_done_date"] == db.today_str()
+    assert any("Marked done for today" in r for r in update.message.replies)
+
+
+def test_natural_language_mark_reminder_done_undoes_back_to_pending(monkeypatch):
+    db.get_or_create_user(CHAT)
+    reminder_id = db.add_reminder(CHAT, "take hair pills")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return _reminder_correction(reminder_id, "mark_done")
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    context = FakeContext()
+    _run(bot.handle_text(FakeUpdate(CHAT, text="took my hair pills"), context))
+    assert db.get_reminder(CHAT, reminder_id)["last_done_date"] == db.today_str()
+
+    _run(bot.handle_text(FakeUpdate(CHAT, text="undo"), context))
+    assert db.get_reminder(CHAT, reminder_id)["last_done_date"] is None
+
+
+def test_natural_language_delete_reminder(monkeypatch):
+    db.get_or_create_user(CHAT)
+    reminder_id = db.add_reminder(CHAT, "take hair pills")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return _reminder_correction(reminder_id, "delete")
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="stop reminding me to take hair pills")
+    _run(bot.handle_text(update, FakeContext()))
+    assert db.get_reminder(CHAT, reminder_id) is None
+    assert any("Removed" in r for r in update.message.replies)
+
+
+def test_natural_language_delete_reminder_undoes_the_removal(monkeypatch):
+    db.get_or_create_user(CHAT)
+    reminder_id = db.add_reminder(CHAT, "take hair pills")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return _reminder_correction(reminder_id, "delete")
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    context = FakeContext()
+    _run(bot.handle_text(FakeUpdate(CHAT, text="stop reminding me to take hair pills"), context))
+    assert db.get_reminder(CHAT, reminder_id) is None
+
+    _run(bot.handle_text(FakeUpdate(CHAT, text="undo"), context))
+    assert db.get_active_reminders(CHAT)[0]["description"] == "take hair pills"
+
+
+def test_natural_language_reminder_correction_with_unknown_id_asks_instead_of_guessing(monkeypatch):
+    db.get_or_create_user(CHAT)
+    db.add_reminder(CHAT, "take hair pills")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return _reminder_correction(9999, "mark_done")
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="done with that other reminder")
+    _run(bot.handle_text(update, FakeContext()))
+    assert any("not sure which daily reminder" in r for r in update.message.replies)
+
+
+def test_natural_language_reminder_correction_rejects_an_unsupported_action(monkeypatch):
+    """Reminders only support mark_done/delete -- no edit_date/edit_task-
+    style flexible edit yet (see _handle_reminder_correction's docstring).
+    A stray/unexpected correction_action should ask rather than silently
+    doing nothing or crashing on a KeyError."""
+    db.get_or_create_user(CHAT)
+    reminder_id = db.add_reminder(CHAT, "take hair pills")
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
+                            recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
+                            recent_events=None, recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return _reminder_correction(reminder_id, "edit_date")
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    update = FakeUpdate(CHAT, text="that reminder should be dated yesterday")
+    _run(bot.handle_text(update, FakeContext()))
+    assert any("isn't supported yet" in r for r in update.message.replies)
+    assert db.get_reminder(CHAT, reminder_id)["last_done_date"] is None  # untouched

@@ -808,12 +808,68 @@ async def _handle_income_config_adjustment(update: Update, context: ContextTypes
     )
 
 
+async def _handle_reminder_correction(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                       parsed: dict, recent_reminder_ids: set):
+    """Natural-language mark_done/delete for a standing daily reminder -- the
+    NL counterpart to /donereminder and /removereminder (see reminders.py's
+    module docstring: those two were deliberately slash-command-only until
+    natural language actually needed them -- a real, explicit ask: "I don't
+    want to have to do fuckin telegram commands, I want to do my shit in
+    plain chat text"). Kept as its OWN small branch here, not folded into
+    _DOMAIN_OPS/_handle_simple_domain_correction like meal/workout/task/etc,
+    because _revert_last_correction's existing domain=="reminder" branch
+    (already shipped, see its own comment) expects snapshots shaped exactly
+    like reminders.py's own donereminder_cmd/removereminder_cmd produce
+    (reminder_id/row keys) -- matching that shape here means undo just
+    works, unchanged, rather than needing a second revert path."""
+    chat_id = update.effective_chat.id
+    target_id = parsed.get("target_expense_id")
+    action = parsed.get("correction_action")
+
+    if target_id not in recent_reminder_ids:
+        await _reply(
+            update, chat_id,
+            "I'm not sure which daily reminder you mean -- run /reminders to see IDs."
+        )
+        return
+    if action not in {"mark_done", "delete"}:
+        await _reply(
+            update, chat_id,
+            "Found that reminder, but that kind of edit isn't supported yet -- marking it done for today, "
+            "or removing it for good, is."
+        )
+        return
+
+    row = db.get_reminder(chat_id, target_id)
+    if row is None:
+        await _reply(update, chat_id, "Couldn't find that reminder anymore -- run /reminders to check.")
+        return
+
+    if action == "mark_done":
+        updated = db.mark_reminder_done_today(chat_id, target_id)
+        context.chat_data[LAST_CORRECTION_KEY] = {
+            "domain": "reminder", "action": "mark_done", "reminder_id": target_id,
+        }
+        await _reply(
+            update, chat_id,
+            f"Marked done for today: {_reminder_line(updated)}. Reply 'undo' if that's wrong."
+        )
+        return
+
+    if action == "delete":
+        deleted = db.delete_reminder(chat_id, target_id)
+        context.chat_data[LAST_CORRECTION_KEY] = {"domain": "reminder", "action": "delete", "row": deleted}
+        await _reply(update, chat_id, f"Removed: {_reminder_line(deleted)}. Reply 'undo' if that's wrong.")
+        return
+
+
 async def _handle_correction(update: Update, context: ContextTypes.DEFAULT_TYPE, parsed: dict,
                               recent_ids: set, recent_meal_ids: set = frozenset(),
                               recent_workout_ids: set = frozenset(), recent_vitals_ids: set = frozenset(),
                               recent_task_ids: set = frozenset(), recent_event_ids: set = frozenset(),
                               recent_lift_ids: set = frozenset(), recent_subscription_ids: set = frozenset(),
-                              recent_income_ids: set = frozenset(), recent_deduction_ids: set = frozenset()):
+                              recent_income_ids: set = frozenset(), recent_deduction_ids: set = frozenset(),
+                              recent_reminder_ids: set = frozenset()):
     """Applies a correction the AI identified against one of the chat's
     recent expenses/meals/workouts/lifts/vitals/tasks/events. Every
     confirmation message here is built from real values just read back from
@@ -859,6 +915,10 @@ async def _handle_correction(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
     if domain == "income_config":
         await _handle_income_config_adjustment(update, context, parsed)
+        return
+
+    if domain == "reminder":
+        await _handle_reminder_correction(update, context, parsed, recent_reminder_ids)
         return
 
     if target_id not in recent_ids or action not in CORRECTION_ACTIONS:

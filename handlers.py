@@ -159,6 +159,17 @@ def _recent_deductions_for_ai(chat_id: int) -> list:
              "deduction_date": r["deduction_date"]} for r in rows]
 
 
+def _recent_reminders_for_ai(chat_id: int) -> list:
+    """Every standing daily reminder (see db.get_active_reminders) -- what a
+    reminder correction (mark_done/delete) may target. No separate
+    "recent" cutoff the way logged domains have -- there's no date to sort
+    by, and the list is small enough (a handful of daily habits, not
+    hundreds of logged rows) that there's no need to truncate it."""
+    rows = db.get_active_reminders(chat_id)
+    return [{"id": r["id"], "description": r["description"], "last_done_date": r["last_done_date"]}
+            for r in rows]
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await _reject_if_not_allowed(update):
         return
@@ -220,6 +231,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recent_income_ids = {r["id"] for r in recent_income}
     recent_deductions = _recent_deductions_for_ai(chat_id)
     recent_deduction_ids = {r["id"] for r in recent_deductions}
+    recent_reminders = _recent_reminders_for_ai(chat_id)
+    recent_reminder_ids = {r["id"] for r in recent_reminders}
     # The message just added above is deliberately included here -- the
     # model should see its own current turn as part of the running thread,
     # not just what came before it.
@@ -231,12 +244,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         merged_text = f"{pending['original']}\n(Additional info: {text})"
         parsed = ai.parse_message(merged_text, recent_expenses, recent_meals, recent_workouts, recent_vitals,
                                    recent_tasks, recent_messages, memory_list, recent_events, recent_lifts,
-                                   recent_subscriptions, recent_income, recent_deductions)
+                                   recent_subscriptions, recent_income, recent_deductions, recent_reminders)
     else:
         merged_text = text
         parsed = ai.parse_message(text, recent_expenses, recent_meals, recent_workouts, recent_vitals,
                                    recent_tasks, recent_messages, memory_list, recent_events, recent_lifts,
-                                   recent_subscriptions, recent_income, recent_deductions)
+                                   recent_subscriptions, recent_income, recent_deductions, recent_reminders)
 
     intent = parsed.get("intent")
 
@@ -269,7 +282,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_correction(update, context, parsed, recent_ids, recent_meal_ids,
                                   recent_workout_ids, recent_vitals_ids, recent_task_ids, recent_event_ids,
                                   recent_lift_ids, recent_subscription_ids, recent_income_ids,
-                                  recent_deduction_ids)
+                                  recent_deduction_ids, recent_reminder_ids)
         return
 
     if intent == "show_balance":

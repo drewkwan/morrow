@@ -356,7 +356,7 @@ Respond with ONLY a JSON object, no other text, matching this shape:
     all, see that intent's own rules below) -- "recurrence" here is for a to-do that still has a real due date
     each cycle, just at a cadence other than daily)}},
 
-  "target_domain": "expense" | "meal" | "workout" | "lift" | "vitals" | "task" | "event" | "balance" | "subscription" | "income" | "deduction" | "income_config" or null (correction
+  "target_domain": "expense" | "meal" | "workout" | "lift" | "vitals" | "task" | "event" | "balance" | "subscription" | "income" | "deduction" | "income_config" | "reminder" or null (correction
     only -- which recent-<domain> list target_expense_id refers to; null means "expense", for backward
     compatibility; "balance" and "income_config" are different from the rest -- see below and the
     adjust_balance/edit_income_config rules),
@@ -683,8 +683,14 @@ Deciding the intent:
   not mark_done; but "correct both to 2026-09-23", "push day should be tomorrow", "actually dinner with Mel is
   Thursday not Wednesday" are target_domain="event", correction_action="reschedule" (NOT "delete" -- the event
   is moving to a different day, not going away -- see the CRITICAL warning below on this exact distinction)) --
-  also "that Netflix subscription is actually $17 now", "move my gym membership billing to the 5th", "cancel my
-  Spotify subscription" (target_domain="subscription"); "that bonus was actually $600, not $500", "that income
+  also "took my hair pills", "done with my vitamins", "stretched already today" are target_domain="reminder",
+  correction_action="mark_done" as long as the description matches something in the standing daily reminders
+  list (done for TODAY only -- it comes back tomorrow, unlike a task's permanent mark_done); "stop reminding
+  me to stretch", "remove that daily reminder, I don't need it anymore" are target_domain="reminder",
+  correction_action="delete" (removes it for good -- see target_domain="reminder"'s own CRITICAL note above
+  for telling this apart from a task with similar wording); also "that Netflix subscription is actually $17
+  now", "move my gym membership billing to the 5th", "cancel my Spotify subscription"
+  (target_domain="subscription"); "that bonus was actually $600, not $500", "that income
   entry should be tagged as a bonus, not salary", "delete that income entry, I logged it twice"
   (target_domain="income"); "that CPF top-up was $600 not $500", "wrong, that tax payment was yesterday"
   (target_domain="deduction") -- OR about the
@@ -766,7 +772,19 @@ Deciding the intent:
   part of edit_subscription, not a backward-looking "when did this happen" correction); for "income" and
   "deduction" targets,
   "edit_date", their own flexible "edit_income"/"edit_deduction" correction (see below), and "delete" are
-  supported.
+  supported; for "reminder" targets, "mark_done" (means "done for TODAY only" -- it comes back again
+  tomorrow, unlike a task's mark_done which can close a one-off for good; see db.mark_reminder_done_today)
+  and "delete" (removes the standing daily reminder entirely, e.g. "I don't need to be reminded about that
+  anymore") are supported -- no edit_date/edit_task-style flexible edit yet, since a reminder has no date to
+  move and only one field (its description) to begin with.
+
+  CRITICAL: a message about a standing DAILY habit someone already told Morrow to remind them about every
+  day (e.g. "took my hair pills", "done with my vitamins for today", "stop reminding me about stretching")
+  is target_domain="reminder", NOT target_domain="task" -- even though the phrasing ("done with X", "remove
+  that") looks identical to a task correction. The giveaway is the THING itself: match it against the
+  standing daily reminders list, not the open to-dos list -- if the same words could plausibly mean either
+  (e.g. a bare "done" right after Morrow listed both), prefer whichever list actually contains a matching
+  item, and use "clarification" only if it genuinely matches both.
 
   CRITICAL: never default to "edit_date" just because it's the first-listed or most familiar action -- only
   use "edit_date" when the message is actually about WHEN something happened (a day/date), never as a
@@ -1187,7 +1205,8 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
                    recent_tasks: list | None = None, recent_messages: list | None = None,
                    memory_list: list | None = None, recent_events: list | None = None,
                    recent_lifts: list | None = None, recent_subscriptions: list | None = None,
-                   recent_income: list | None = None, recent_deductions: list | None = None) -> dict:
+                   recent_income: list | None = None, recent_deductions: list | None = None,
+                   recent_reminders: list | None = None) -> dict:
     """recent_expenses: list of {id, amount, currency, description, category,
     expense_date, is_claimable} dicts, most recent first -- typically the
     last ~8 for this chat. recent_meals / recent_workouts / recent_vitals:
@@ -1227,6 +1246,13 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
     for deductions (see db.get_recent_deductions). All three appended as the
     LAST parameters, same "real call-site change, worth paying the one-off
     test-double update cost" reasoning as recent_events/recent_lifts above.
+    recent_reminders: list of {id, description, last_done_date} dicts (see
+    db.get_active_reminders) -- what a reminder correction (mark_done/
+    delete) may target; same reasoning, appended even later since this is
+    the newest domain to get natural-language corrections (see
+    reminders.py's module docstring -- mark_done/delete used to be
+    slash-command-only, by deliberate choice, until Andrew actually asked
+    for plain-text "done with my hair pills"/"remove that reminder" instead).
     Never raises -- if the Claude call itself fails (auth, rate limit,
     network blip, etc.), falls back to a clarification response so the bot
     always replies to the user instead of going silent.
@@ -1243,6 +1269,7 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
     recent_subscriptions = recent_subscriptions or []
     recent_income = recent_income or []
     recent_deductions = recent_deductions or []
+    recent_reminders = recent_reminders or []
     user_content = (
         f"{_today_context()}\n\n"
         f"Recent expenses (most recent first, only reference an id from here for target_domain=expense):\n"
@@ -1265,6 +1292,8 @@ def parse_message(text: str, recent_expenses: list | None = None, recent_meals: 
         f"{json.dumps(recent_income)}\n\n"
         f"Recent deductions (most recent first, only reference an id from here for target_domain=deduction):\n"
         f"{json.dumps(recent_deductions)}\n\n"
+        f"Standing daily reminders (only reference an id from here for target_domain=reminder):\n"
+        f"{json.dumps(recent_reminders)}\n\n"
         f"Recent conversation history (oldest first):\n"
         f"{json.dumps(recent_messages)}\n\n"
         f"Durable memory (a label, category, and content per item -- only source of remembered facts, only "

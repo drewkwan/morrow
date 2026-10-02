@@ -174,7 +174,7 @@ def test_correction_can_edit_workout_calories_burned_and_undo(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "workout", "target_expense_id": workout_id,
             "correction_action": "edit_workout", "new_workout_calories_burned": 2862,
@@ -199,7 +199,7 @@ def test_correction_edit_workout_with_nothing_set_asks_what_to_fix(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "workout", "target_expense_id": workout_id,
             "correction_action": "edit_workout",
@@ -224,7 +224,7 @@ def test_correction_unsupported_field_gives_accurate_message_not_edit_date(monke
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None,
                             recent_vitals=None, recent_tasks=None, recent_messages=None, memory_list=None,
                             recent_events=None, recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "vitals", "target_expense_id": vitals_id,
             "correction_action": "edit_unsupported_field",
@@ -445,7 +445,7 @@ def test_natural_language_log_meal_updates_running_total(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return _log_meal_response()
 
     monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
@@ -469,7 +469,7 @@ def test_natural_language_log_meal_with_two_meals_logs_both(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return _log_meal_response(meals=[
             {"meal_type": "Breakfast", "items": ["toast with strawberry jam", "Old Town white coffee"],
              "calories_low": 320, "calories_high": 420, "calories_estimate": 370, "water_ml": None},
@@ -643,7 +643,7 @@ def test_resolving_a_photo_caption_clarification_logs_only_what_the_user_confirm
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         assert "black bean pork broth" in text and "nachos" in text  # the pending context must reach the model
         return _log_meal_response(meals=[{
             "meal_type": "Dinner", "items": ["black bean pork broth"],
@@ -666,7 +666,7 @@ def test_natural_language_log_workout(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {"intent": "log_workout", "activity": "tennis", "duration_min": 60,
                 "distance_km": None, "workout_notes": "won 2 sets",
                 "clarification_question": None, "casual_reply": None}
@@ -710,7 +710,7 @@ def test_natural_language_log_workout_shows_weekly_summary(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {"intent": "log_workout", "activity": "tennis", "duration_min": 60,
                 "distance_km": None, "workout_notes": None,
                 "clarification_question": None, "casual_reply": None}
@@ -735,7 +735,7 @@ def test_natural_language_log_workout_backdates_with_logged_days_ago(monkeypatch
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {"intent": "log_workout", "activity": "run", "duration_min": 30,
                 "distance_km": 5.0, "workout_notes": None, "logged_days_ago": 1,
                 "clarification_question": None, "casual_reply": None}
@@ -759,7 +759,7 @@ def test_natural_language_log_meal_single_item_backdates_with_logged_days_ago(mo
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return _log_meal_response(meals=[
             {"meal_type": None, "items": ["cup of decaf tea with milk"], "calories_low": 20, "calories_high": 50,
              "calories_estimate": 35, "water_ml": 500, "logged_days_ago": 1},
@@ -788,7 +788,7 @@ def test_natural_language_log_meal_mixed_days_in_one_message_gets_per_day_totals
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return _log_meal_response(meals=[
             {"meal_type": "Dinner", "items": ["mango"], "calories_low": 90, "calories_high": 120,
              "calories_estimate": 105, "water_ml": None, "logged_days_ago": 1},
@@ -822,7 +822,7 @@ def test_correction_can_target_a_meal_by_domain(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "meal", "target_expense_id": meal_id,
             "correction_action": "delete", "days_ago": None,
@@ -843,7 +843,7 @@ def test_undo_reverts_a_meal_deletion(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "meal", "target_expense_id": meal_id,
             "correction_action": "delete", "days_ago": None,
@@ -873,7 +873,7 @@ def test_correction_can_edit_a_meal_to_remove_a_hallucinated_item(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "meal", "target_expense_id": meal_id,
             "correction_action": "edit_meal", "days_ago": None,
@@ -900,7 +900,7 @@ def test_undo_reverts_a_meal_edit(monkeypatch):
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "meal", "target_expense_id": meal_id,
             "correction_action": "edit_meal", "days_ago": None,
@@ -935,7 +935,7 @@ def test_meal_correction_found_but_unsupported_action_says_so_distinctly(monkeyp
     def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
                             recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
                             recent_lifts=None, recent_subscriptions=None,
-                            recent_income=None, recent_deductions=None):
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
         return {
             "intent": "correction", "target_domain": "meal", "target_expense_id": meal_id,
             "correction_action": "edit_category", "days_ago": None,

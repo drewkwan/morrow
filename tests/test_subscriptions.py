@@ -262,6 +262,23 @@ def test_subscriptions_tick_passes_through_is_claimable():
     assert db.get_recent_expenses(CHAT)[0]["is_claimable"] == 1
 
 
+def test_subscriptions_tick_flags_the_posted_expense_as_a_subscription():
+    """Regression test for a real production bug: an auto-posted renewal
+    used to count against the daily spending target and the within-budget
+    streak exactly like a discretionary purchase (see db._spent_on's
+    docstring) -- it must now be flagged is_subscription so that's
+    excluded, while still counting toward real spend everywhere else."""
+    db.get_or_create_user(CHAT)
+    db.set_daily_target(CHAT, 100)
+    db.add_subscription(CHAT, "Singtel", 69.00, "SGD", "monthly", db.today_str(), category="Bills & Utilities")
+    context = FakeTickContext()
+    _run(subscriptions.subscriptions_tick(context))
+    expense_id = db.get_recent_expenses(CHAT)[0]["id"]
+    row = db.get_expense(CHAT, expense_id)
+    assert row["is_subscription"] == 1
+    assert db.get_status(CHAT)["spent_today"] == 0
+
+
 def test_subscriptions_tick_notifies_the_chat():
     db.get_or_create_user(CHAT)
     db.add_subscription(CHAT, "Netflix", 15.98, "SGD", "monthly", db.today_str())

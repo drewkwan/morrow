@@ -12,6 +12,7 @@ test in the suite.
 import json
 from datetime import date
 
+import config
 import fx
 
 # Captured now, at module import/collection time -- before any test's
@@ -74,3 +75,81 @@ def test_get_rate_cache_key_uses_bot_timezone_date_not_server_clock(monkeypatch)
 
     assert _REAL_GET_RATE("USD", "SGD") == 1.40
     assert len(calls) == 2
+
+
+# ---------- get_rate: retry before giving up ----------
+#
+# Added after a real production incident (see to_base_checked's docstring):
+# a single failed Frankfurter lookup used to fall straight through to the
+# 1:1 fallback with no second attempt, even for an ordinary transient blip.
+
+def test_get_rate_retries_once_then_succeeds(monkeypatch):
+    fx._rate_cache.clear()
+    monkeypatch.setattr(fx, "GET_RATE_RETRY_DELAY_SECONDS", 0)  # no real sleep in tests
+    monkeypatch.setattr(fx, "_now_local_date", lambda: date(2026, 9, 17))
+    calls = []
+
+    def flaky_urlopen(url, timeout=8):
+        calls.append(url)
+        if len(calls) == 1:
+            raise OSError("simulated transient network failure")
+        return _FakeResponse({"rates": {"SGD": 1.35}})
+
+    monkeypatch.setattr(fx.urllib.request, "urlopen", flaky_urlopen)
+    assert _REAL_GET_RATE("USD", "SGD") == 1.35
+    assert len(calls) == 2  # first attempt failed, second succeeded
+
+
+def test_get_rate_raises_after_every_attempt_fails(monkeypatch):
+    fx._rate_cache.clear()
+    monkeypatch.setattr(fx, "GET_RATE_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(fx, "_now_local_date", lambda: date(2026, 9, 18))
+    calls = []
+
+    def always_fails(url, timeout=8):
+        calls.append(url)
+        raise OSError("simulated sustained outage")
+
+    monkeypatch.setattr(fx.urllib.request, "urlopen", always_fails)
+    try:
+        _REAL_GET_RATE("USD", "SGD")
+        assert False, "expected get_rate to raise after exhausting retries"
+    except OSError:
+        pass
+    assert len(calls) == fx.GET_RATE_ATTEMPTS
+
+
+# ---------- to_base_checked: reports whether the real rate was used ----------
+
+def test_to_base_checked_reports_success_on_a_normal_conversion(monkeypatch):
+    monkeypatch.setattr(fx, "get_rate", lambda f, t: 1.35)
+    amount_base, ok = fx.to_base_checked(20, "USD")
+    assert amount_base == 27.0
+    assert ok is True
+
+
+def test_to_base_checked_reports_failure_and_falls_back_to_1to1(monkeypatch):
+    """Regression test for the real incident: amount_base must still come
+    back usable (never block logging) but the caller must be able to tell
+    the real rate wasn't actually used."""
+    def _always_fails(f, t):
+        raise RuntimeError("simulated Frankfurter outage")
+
+    monkeypatch.setattr(fx, "get_rate", _always_fails)
+    amount_base, ok = fx.to_base_checked(115, "USD")
+    assert amount_base == 115  # unconverted
+    assert ok is False
+
+
+def test_to_base_checked_same_currency_is_always_success():
+    amount_base, ok = fx.to_base_checked(50, config.BASE_CURRENCY)
+    assert amount_base == 50
+    assert ok is True
+
+
+def test_to_base_still_returns_a_plain_float_unaffected_by_the_checked_variant(monkeypatch):
+    """to_base's existing signature/behavior must be untouched for its
+    other seven call sites (income, deductions, edits) that don't need
+    the fallback flag."""
+    monkeypatch.setattr(fx, "get_rate", lambda f, t: 1.35)
+    assert fx.to_base(20, "USD") == 27.0

@@ -112,19 +112,27 @@ async def _handle_explicit_log(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     description = description or ("claimable expense" if is_claimable else "expense")
     category = ai.categorize(description)
-    db.add_expense(chat_id, amount, currency, description, category, is_claimable=is_claimable)
+    expense_id = db.add_expense(chat_id, amount, currency, description, category, is_claimable=is_claimable)
+    # See handlers.py's log_expense branch for why this is a re-fetch, not
+    # a flag threaded through the inputs above -- fx_fallback is decided
+    # inside add_expense itself (fx.to_base_checked).
+    row = db.get_expense(chat_id, expense_id)
+    fx_tag = (
+        " [couldn't fetch today's exchange rate just now -- logged at 1:1, let me know and I'll fix it]"
+        if row and row.get("fx_fallback") else ""
+    )
 
     if is_claimable:
         status = db.get_status(chat_id)
         await update.message.reply_text(
-            f"Logged claimable: {_money(amount, currency)} -- {description} [{category}]\n"
+            f"Logged claimable: {_money(amount, currency)} -- {description} [{category}]{fx_tag}\n"
             f"Pending claimables: {_money(status['pending_claimable'])}\n"
             "(This doesn't touch your daily allowance.)"
         )
     else:
         status = db.get_status(chat_id)
         await update.message.reply_text(
-            f"Logged: {_money(amount, currency)} -- {description} [{category}]\n\n{_status_text(status)}"
+            f"Logged: {_money(amount, currency)} -- {description} [{category}]{fx_tag}\n\n{_status_text(status)}"
         )
         await _send_alert_if_needed(update, chat_id)
 

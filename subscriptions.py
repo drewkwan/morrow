@@ -201,7 +201,15 @@ async def subscriptions_tick(context: ContextTypes.DEFAULT_TYPE):
     this cycle" check. is_claimable flows straight through to the posted
     expense (see db.py's subscriptions section docstring), so a
     subscription you expense to your employer shows up in /claimed the
-    normal way."""
+    normal way. is_subscription=True is also always passed -- a real bug
+    this fixed: an auto-posted renewal used to count against the daily
+    spending target and the within-budget streak exactly like a
+    discretionary purchase, so a Netflix bill could silently break a
+    streak the user never actually overspent on (see
+    db._spent_on/expenses.is_subscription's docstrings). It still counts
+    everywhere real spend matters (month-to-date total, category
+    insights, net worth, /recent) -- only the daily target/streak exclude
+    it."""
     today = date.fromisoformat(db.today_str())
     today_str = today.isoformat()
     for chat_id in db.get_all_chat_ids():
@@ -212,6 +220,7 @@ async def subscriptions_tick(context: ContextTypes.DEFAULT_TYPE):
                 chat_id, sub["amount"], sub["currency"], sub["name"],
                 sub.get("category") or DEFAULT_SUBSCRIPTION_CATEGORY,
                 is_claimable=bool(sub.get("is_claimable")),
+                is_subscription=True,
             )
             new_next_renewal_date = db.advance_date_by_frequency(today, sub["frequency"]).isoformat()
             db.advance_subscription(sub["id"], today_str, new_next_renewal_date)

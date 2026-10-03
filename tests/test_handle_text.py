@@ -17,6 +17,7 @@ import asyncio
 
 import bot
 import db
+import fx
 from conftest import CHAT
 
 
@@ -213,6 +214,73 @@ def test_single_expense_reply_wording_unchanged(monkeypatch):
     update = FakeUpdate(CHAT, "spent 12.50 on lunch")
     _run(bot.handle_text(update, context))
     assert update.message.replies[-1].startswith("Logged:")
+
+
+def test_natural_language_log_expense_warns_when_the_fx_conversion_falls_back(monkeypatch):
+    """Regression test for the real production incident: a foreign-currency
+    expense whose rate lookup fails must still log (never block -- see
+    fx.to_base_checked's docstring), but the confirmation must say so
+    instead of silently presenting an unconverted amount as a normal
+    converted total."""
+    db.get_or_create_user(CHAT)
+    db.set_daily_target(CHAT, 100)
+    context = FakeContext()
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
+                            recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return {
+            "intent": "log_expense",
+            "expenses": [{"amount": 115, "currency": "USD", "description": "lunch",
+                           "category": "Food", "is_claimable": False}],
+            "target_expense_id": None, "correction_action": None, "days_ago": None,
+            "new_currency": None, "new_amount": None, "new_description": None, "new_category": None,
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    def _always_fails(from_ccy, to_ccy):
+        raise RuntimeError("simulated Frankfurter outage")
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    monkeypatch.setattr(fx, "get_rate", _always_fails)
+    update = FakeUpdate(CHAT, "115 USD for lunch")
+    _run(bot.handle_text(update, context))
+    # Crossing the 90% budget-alert threshold sends a SECOND reply (see
+    # test_multi_round_clarification_accumulates_context_instead_of_overwriting's
+    # comment on the same thing) -- check every reply, not just the last.
+    assert any("couldn't fetch today's exchange rate" in r for r in update.message.replies)
+    # The real money math must still be safe: 115 USD landed as 115 SGD
+    # (unconverted), not a guessed/invented figure.
+    assert db.get_status(CHAT)["spent_today"] == 115
+
+
+def test_natural_language_log_expense_has_no_fx_warning_on_a_normal_conversion(monkeypatch):
+    """Backward-compat pin: the common case (conversion succeeds) must
+    read exactly as it always has, with no new tag appended."""
+    db.get_or_create_user(CHAT)
+    db.set_daily_target(CHAT, 100)
+    context = FakeContext()
+
+    def fake_parse_message(text, recent_expenses=None, recent_meals=None, recent_workouts=None, recent_vitals=None,
+                            recent_tasks=None, recent_messages=None, memory_list=None, recent_events=None,
+                            recent_lifts=None, recent_subscriptions=None,
+                            recent_income=None, recent_deductions=None, recent_reminders=None):
+        return {
+            "intent": "log_expense",
+            "expenses": [{"amount": 115, "currency": "USD", "description": "lunch",
+                           "category": "Food", "is_claimable": False}],
+            "target_expense_id": None, "correction_action": None, "days_ago": None,
+            "new_currency": None, "new_amount": None, "new_description": None, "new_category": None,
+            "clarification_question": None, "casual_reply": None,
+        }
+
+    monkeypatch.setattr(bot.ai, "parse_message", fake_parse_message)
+    monkeypatch.setattr(fx, "get_rate", lambda f, t: 1.35)
+    update = FakeUpdate(CHAT, "115 USD for lunch")
+    _run(bot.handle_text(update, context))
+    assert not any("couldn't fetch today's exchange rate" in r for r in update.message.replies)
+    assert update.message.replies[0].startswith("Logged:")
 
 
 def _no_op_extra_fields():

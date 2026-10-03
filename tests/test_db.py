@@ -213,6 +213,106 @@ def test_add_expense_same_currency_skips_conversion():
     assert row["amount_base"] == 20  # no fx.get_rate call needed (would fail via conftest guard)
 
 
+def test_add_expense_records_no_fallback_on_a_successful_conversion(monkeypatch):
+    import fx
+    monkeypatch.setattr(fx, "get_rate", lambda f, t: 1.35)
+    db.get_or_create_user(CHAT)
+    expense_id = db.add_expense(CHAT, 20, "USD", "taxi", "Transport")
+    row = db.get_expense(CHAT, expense_id)
+    assert row["fx_fallback"] == 0
+
+
+def test_add_expense_flags_fx_fallback_and_logs_at_1to1_when_the_rate_lookup_fails(monkeypatch):
+    """Regression test for a real production incident: a transient
+    Frankfurter failure silently produced a materially wrong amount_base
+    (a USD lunch landed in the SGD total completely unconverted) with
+    nothing in the data to say the real rate hadn't actually been used.
+    add_expense must still succeed (never block logging -- see fx.
+    to_base_checked's docstring) but now flags the row so the confirmation
+    reply can warn instead of presenting it as a normal conversion."""
+    import fx
+
+    def _always_fails(from_ccy, to_ccy):
+        raise RuntimeError("simulated Frankfurter outage")
+
+    monkeypatch.setattr(fx, "get_rate", _always_fails)
+    db.get_or_create_user(CHAT)
+    expense_id = db.add_expense(CHAT, 115, "USD", "lunch", "Food")
+    row = db.get_expense(CHAT, expense_id)
+    assert row["amount"] == 115
+    assert row["amount_base"] == 115  # unconverted 1:1 fallback, not a guessed rate
+    assert row["fx_fallback"] == 1
+
+
+def test_add_expense_defaults_is_subscription_to_false():
+    db.get_or_create_user(CHAT)
+    expense_id = db.add_expense(CHAT, 20, "SGD", "lunch", "Food")
+    row = db.get_expense(CHAT, expense_id)
+    assert row["is_subscription"] == 0
+
+
+# ---------- is_subscription: excluded from the daily target/streak, not from real spend ----------
+#
+# Real production bug this guards against: subscriptions.subscriptions_tick
+# auto-posts a due subscription as a real expense (see its own docstring),
+# and that used to count against the daily spending target and the
+# within-budget streak exactly like a discretionary purchase -- a Netflix
+# or phone-bill renewal could silently blow a streak the user never
+# actually overspent on. is_subscription=True expenses must be excluded
+# from spent_today/available_today/the streak (db._spent_on), while still
+# counting everywhere real spend matters: month-to-date total, category
+# insights, net worth, and /recent.
+
+def test_subscription_expense_does_not_count_toward_spent_today():
+    db.get_or_create_user(CHAT)
+    db.set_daily_target(CHAT, 100)
+    db.add_expense(CHAT, 69.00, "SGD", "Singtel", "Bills & Utilities", is_subscription=True)
+    db.add_expense(CHAT, 6.99, "SGD", "Twitch", "Entertainment", is_subscription=True)
+    status = db.get_status(CHAT)
+    assert status["spent_today"] == 0
+    assert status["available_today"] == 100
+
+
+def test_subscription_expense_does_not_break_the_streak(monkeypatch):
+    """A subscription dated YESTERDAY that exceeds the daily target must
+    not reset the streak on today's rollover -- the exact real-world
+    shape of the bug (a bill renewal on a day with nothing else spent)."""
+    from datetime import date, timedelta
+    yesterday = date.today() - timedelta(days=1)
+    monkeypatch.setattr(db, "_now_local_date", lambda: yesterday)
+    db.get_or_create_user(CHAT)
+    db.set_daily_target(CHAT, 100)
+    db.add_expense(CHAT, 150.00, "SGD", "Annual hosting renewal", "Bills & Utilities", is_subscription=True)
+    monkeypatch.setattr(db, "_now_local_date", lambda: date.today())
+    status = db.get_status(CHAT)
+    assert status["current_streak"] == 1  # yesterday counted as within budget, not blown
+
+
+def test_subscription_expense_still_counts_toward_month_to_date_total():
+    db.get_or_create_user(CHAT)
+    db.add_expense(CHAT, 69.00, "SGD", "Singtel", "Bills & Utilities", is_subscription=True)
+    totals = db.get_month_to_date_total(CHAT)
+    assert totals["total"] == 69.00
+
+
+def test_subscription_expense_still_counts_toward_net_worth():
+    db.get_or_create_user(CHAT)
+    db.add_expense(CHAT, 69.00, "SGD", "Singtel", "Bills & Utilities", is_subscription=True)
+    net_worth = db.get_net_worth(CHAT)
+    assert net_worth["total_spend"] == 69.00
+    assert net_worth["net_worth"] == -69.00
+
+
+def test_subscription_expense_still_counts_toward_category_totals():
+    from datetime import date, timedelta
+    db.get_or_create_user(CHAT)
+    today = db.today_str()
+    tomorrow = (date.fromisoformat(today) + timedelta(days=1)).isoformat()
+    db.add_expense(CHAT, 69.00, "SGD", "Singtel", "Bills & Utilities", is_subscription=True)
+    totals = db.get_category_totals(CHAT, today, tomorrow)
+    assert totals == [{"category": "Bills & Utilities", "total": 69.00, "n": 1}]
+
+
 # ---------- balance-safe undo / edit / delete ----------
 
 def test_delete_past_day_expense_credits_balance_back():

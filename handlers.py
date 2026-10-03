@@ -581,11 +581,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # See ai.py's logged_days_ago rule -- "yesterday I paid 12 for lunch"
         # used to always land on today regardless of what the message said.
         expense_date = _target_date_from_days_ago(item.get("logged_days_ago"))
-        db.add_expense(chat_id, amount, currency, description, category, is_claimable=is_claimable,
-                       expense_date=expense_date)
+        expense_id = db.add_expense(chat_id, amount, currency, description, category, is_claimable=is_claimable,
+                                     expense_date=expense_date)
+        # Re-fetch rather than trusting the inputs above -- fx_fallback is
+        # decided inside add_expense itself (see fx.to_base_checked), so
+        # this is the only way to know whether the real exchange rate was
+        # actually used or a lookup failure silently fell back to 1:1. Real
+        # incident this guards against: a USD lunch landed in the SGD total
+        # completely unconverted, with nothing in the reply to say so.
+        row = db.get_expense(chat_id, expense_id)
+        fx_tag = (
+            " [couldn't fetch today's exchange rate just now -- logged at 1:1, let me know and I'll fix it]"
+            if row and row.get("fx_fallback") else ""
+        )
         tag = " [claimable]" if is_claimable else ""
         date_tag = f" ({expense_date})" if expense_date else ""
-        logged_lines.append(f"{_money(amount, currency)} -- {description} [{category}]{tag}{date_tag}")
+        logged_lines.append(f"{_money(amount, currency)} -- {description} [{category}]{tag}{date_tag}{fx_tag}")
         any_personal = any_personal or not is_claimable
         any_backdated = any_backdated or bool(expense_date)
 

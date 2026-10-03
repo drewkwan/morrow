@@ -297,6 +297,31 @@ def init_db() -> None:
         _add_column_if_missing(conn, "expenses", "amount_base", "amount_base REAL")
         # Backfill amount_base for any pre-existing rows (assume same as amount if it was null).
         conn.execute("UPDATE expenses SET amount_base = amount WHERE amount_base IS NULL")
+        # is_subscription: set true ONLY by subscriptions.subscriptions_tick's
+        # auto-post (see its own docstring) -- marks an expense row as a
+        # recurring BILL rather than a discretionary purchase. Real bug this
+        # fixes: an auto-posted subscription counted against the daily
+        # spending target and the within-budget streak the exact same way a
+        # lunch purchase does, so a Netflix renewal could silently blow a
+        # streak the user never actually overspent on. _spent_on excludes
+        # these -- see its own docstring -- but every OTHER view of real
+        # spend (month-to-date total, category insights, net worth,
+        # /recent) still counts them, since the money genuinely left the
+        # account; only the discretionary daily-target/streak math excludes
+        # them. Existing rows default to 0 (not a subscription) -- this
+        # can't retroactively identify which past rows actually came from
+        # subscriptions.subscriptions_tick, so only NEWLY auto-posted ones
+        # are correctly flagged going forward.
+        _add_column_if_missing(conn, "expenses", "is_subscription", "is_subscription INTEGER NOT NULL DEFAULT 0")
+        # fx_fallback: set true by add_expense when fx.to_base_checked had to
+        # fall back to a 1:1 conversion (the real exchange rate lookup
+        # failed) -- see fx.to_base_checked's docstring for the production
+        # incident this guards against: a USD lunch landed in the SGD total
+        # completely unconverted, with nothing in the confirmation reply to
+        # say the conversion hadn't actually happened. handlers.py's
+        # log_expense branch reads this back to append a visible warning
+        # instead of presenting a quietly-wrong amount_base as final.
+        _add_column_if_missing(conn, "expenses", "fx_fallback", "fx_fallback INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "workouts", "calories_burned", "calories_burned REAL")
         # tasks.recurrence_frequency was added to the CREATE TABLE above for
         # recurring to-dos (see add_task's docstring), but CREATE TABLE IF
@@ -433,9 +458,17 @@ def set_daily_target(chat_id: int, amount: float) -> None:
 
 
 def _spent_on(conn: sqlite3.Connection, chat_id: int, day_str: str) -> float:
+    """Feeds get_status's spent_today AND ensure_rollover's day-by-day
+    leftover/streak math -- deliberately excludes is_subscription rows
+    (see the expenses.is_subscription migration's docstring): an
+    auto-posted subscription renewal is real money leaving the account
+    (it still counts in month-to-date totals, category insights, and net
+    worth), but it isn't a DISCRETIONARY purchase, so it shouldn't eat into
+    the daily spending target or be able to break the within-budget streak
+    the way a lunch or a cab ride does."""
     row = conn.execute(
         "SELECT COALESCE(SUM(amount_base), 0) AS total FROM expenses "
-        "WHERE chat_id = ? AND expense_date = ? AND is_claimable = 0",
+        "WHERE chat_id = ? AND expense_date = ? AND is_claimable = 0 AND is_subscription = 0",
         (chat_id, day_str),
     ).fetchone()
     return row["total"]
@@ -561,23 +594,35 @@ def maybe_alert(chat_id: int) -> bool:
 
 
 def add_expense(chat_id: int, amount: float, currency: str, description: str, category: str,
-                 is_claimable: bool = False, expense_date: str | None = None) -> int:
+                 is_claimable: bool = False, expense_date: str | None = None,
+                 is_subscription: bool = False) -> int:
     """expense_date defaults to today -- pass it explicitly only when the
     caller already computed a real backdated date deterministically (see
     add_meal's docstring for the same reasoning; never a date guessed by
     the AI itself). Rollover is always ensured for TODAY regardless -- an
     expense logged onto an earlier day doesn't change where today's own
-    balance boundary sits."""
+    balance boundary sits.
+
+    is_subscription is set true ONLY by subscriptions.subscriptions_tick's
+    auto-post -- see the expenses.is_subscription migration's docstring
+    for why _spent_on excludes it from the daily target/streak while every
+    other real-spend view still counts it.
+
+    Uses fx.to_base_checked (not plain fx.to_base) so a currency-conversion
+    failure is recorded on the row itself (expenses.fx_fallback) instead of
+    only being logged server-side -- see fx.to_base_checked's docstring for
+    the real incident this closes: a USD amount landed in the SGD total
+    completely unconverted with no visible sign anything had gone wrong."""
     ensure_rollover(chat_id)
     get_or_create_user(chat_id)
     currency = (currency or config.BASE_CURRENCY).upper()
-    amount_base = fx.to_base(amount, currency)
+    amount_base, fx_ok = fx.to_base_checked(amount, currency)
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO expenses (chat_id, amount, currency, amount_base, description, category, "
-            "is_claimable, expense_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "is_claimable, expense_date, is_subscription, fx_fallback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (chat_id, amount, currency, amount_base, description, category, int(is_claimable),
-             expense_date or today_str()),
+             expense_date or today_str(), int(is_subscription), int(not fx_ok)),
         )
         return conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
